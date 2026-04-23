@@ -33,8 +33,9 @@ from backend.config import (
 )
 from backend.database import SessionLocal, create_tables, get_db
 from backend.issues import deactivate_stale_issues, router as issues_router
-from backend.models import Issue
+from backend.models import Issue, RouteEvent
 from backend.routing import get_routes, preload_city_graphs
+from backend.saved_routes import router as saved_routes_router
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -122,6 +123,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(issues_router)
+app.include_router(saved_routes_router)
 
 
 @app.get('/geocode')
@@ -271,6 +273,7 @@ def compute_route(
             'lon': issue.lon,
             'category': issue.category,
             'description': issue.description or '',
+            'severity': issue.severity,
             'confidence_score': issue.confidence_score,
             'effective_confidence': issue.effective_confidence,
             'num_reports': issue.num_reports,
@@ -291,10 +294,33 @@ def compute_route(
             issues_data=issues_data,
         )
     except Exception as exc:
+        import traceback
+        print(f'[route] ERROR: {exc}\n{traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=f'Routing failed: {exc}')
 
     elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     print(f"[route] mode={req.mode} issues={len(issues_data)} latency_ms={elapsed_ms}")
+
+    # Log route event for analytics (non-blocking; failure must not break the response)
+    try:
+        features = result.get('features', [])
+        safe_f = next((f for f in features if f.get('properties', {}).get('route_type') == 'safe'), None)
+        fast_f = next((f for f in features if f.get('properties', {}).get('route_type') == 'fast'), None)
+        event = RouteEvent(
+            mode=req.mode,
+            origin_lat=req.origin_lat,
+            origin_lon=req.origin_lon,
+            dest_lat=req.dest_lat,
+            dest_lon=req.dest_lon,
+            safe_score=safe_f['properties'].get('safety_score') if safe_f else None,
+            fast_score=fast_f['properties'].get('safety_score') if fast_f else None,
+            issues_near_route=safe_f['properties'].get('issues_on_path') if safe_f else None,
+        )
+        db.add(event)
+        db.commit()
+    except Exception:
+        pass
+
     return result
 
 

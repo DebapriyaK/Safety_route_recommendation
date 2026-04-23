@@ -166,7 +166,13 @@ def register(body: RegisterRequest, request: Request, db: Session = Depends(get_
     token = create_access_token(user.id, user.username)
     return TokenResponse(
         access_token=token,
-        user={'id': user.id, 'username': user.username, 'email': user.email},
+        user={
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'preferred_mode': user.preferred_mode,
+            'reputation_score': user.reputation_score,
+        },
     )
 
 
@@ -183,7 +189,13 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     token = create_access_token(user.id, user.username)
     return TokenResponse(
         access_token=token,
-        user={'id': user.id, 'username': user.username, 'email': user.email},
+        user={
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'preferred_mode': user.preferred_mode,
+            'reputation_score': user.reputation_score,
+        },
     )
 
 
@@ -195,7 +207,23 @@ def me(current_user: User = Depends(get_current_user)):
         'email': current_user.email,
         'created_at': current_user.created_at.isoformat() if current_user.created_at else None,
         'is_active': current_user.is_active,
+        'preferred_mode': current_user.preferred_mode,
+        'reputation_score': current_user.reputation_score,
     }
+
+
+@router.patch('/profile/mode')
+def update_preferred_mode(
+    mode: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if mode not in ('walk', 'cycle', 'drive'):
+        raise HTTPException(status_code=400, detail="mode must be 'walk', 'cycle', or 'drive'")
+    current_user.preferred_mode = mode
+    db.add(current_user)
+    db.commit()
+    return {'preferred_mode': mode}
 
 
 @router.get('/profile/stats')

@@ -3,7 +3,7 @@
 import math
 import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -26,6 +26,8 @@ from backend.config import (
 
 ox.settings.use_cache = True
 ox.settings.log_console = False
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 # OrderedDict for LRU cache: key -> (created_ts, graph)
 _graph_cache: OrderedDict = OrderedDict()
@@ -266,18 +268,35 @@ def compute_safety_score(edge_data: dict, mode: str = 'walk') -> float:
     else:
         lighting_score = road_type_score * 0.85
 
-    activity_map = {
-        'primary': 0.9,
-        'secondary': 0.8,
-        'tertiary': 0.7,
-        'residential': 0.55,
-        'living_street': 0.5,
-        'cycleway': 0.5,
-        'unclassified': 0.45,
-        'footway': 0.4,
-        'service': 0.25,
-        'track': 0.15,
-    }
+    if mode == 'walk':
+        # For pedestrians "activity" = human foot traffic, not vehicle density.
+        # Dedicated pedestrian infrastructure has high foot traffic = more eyes = safer.
+        activity_map = {
+            'pedestrian': 0.85,
+            'footway': 0.75,
+            'living_street': 0.65,
+            'residential': 0.55,
+            'primary': 0.9,    # busy roads have many witnesses
+            'secondary': 0.8,
+            'tertiary': 0.7,
+            'cycleway': 0.5,
+            'unclassified': 0.45,
+            'service': 0.25,
+            'track': 0.15,
+        }
+    else:
+        activity_map = {
+            'primary': 0.9,
+            'secondary': 0.8,
+            'tertiary': 0.7,
+            'residential': 0.55,
+            'living_street': 0.5,
+            'cycleway': 0.5,
+            'unclassified': 0.45,
+            'footway': 0.4,
+            'service': 0.25,
+            'track': 0.15,
+        }
     activity_score = activity_map.get(highway, 0.45)
 
     raw = 0.4 * lighting_score + 0.3 * activity_score + 0.3 * road_type_score
@@ -409,11 +428,12 @@ def preload_city_graphs() -> None:
 
 
 def _category_time_factor(category: str, current_hour: int) -> float:
-    is_night = current_hour >= 19 or current_hour <= 5
+    # Night: 6 pm (18) to 6 am — covers Bangalore's earliest sunset (~5:55 pm Dec)
+    is_night = current_hour >= 18 or current_hour < 6
     if category == 'Broken Streetlight':
-        return 1.8 if is_night else 0.6
+        return 1.8 if is_night else 1.0   # neutral during day, not helpful
     if category == 'Unsafe Area':
-        return 1.35 if is_night else 0.85
+        return 1.4 if is_night else 1.0   # neutral during day
     return 1.0
 
 
@@ -485,7 +505,7 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
 
     safe_weights: dict = {}
     adj_scores: dict = {}
-    hour = datetime.now().hour if current_hour is None else int(current_hour)
+    hour = datetime.now(_IST).hour if current_hour is None else int(current_hour)
 
     for u, v, key, data in g.edges(keys=True, data=True):
         base_score = float(data.get('safety_score', 50.0))
@@ -507,24 +527,32 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
                 n_con = issue.get('num_confirmations', 0)
                 n_dis = issue.get('num_dismissals', 0)
                 credibility = min(1.0, max(0.15, 0.20 * n_rep + 0.20 * n_con - 0.10 * n_dis))
-                issue_penalty += ISSUE_PENALTIES.get(cat, 10) * credibility * conf * _category_time_factor(cat, hour) / 100.0
+                severity_factor = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(
+                issue.get('severity', 'medium'), 1.0
+            )
+            issue_penalty += (
+                ISSUE_PENALTIES.get(cat, 10)
+                * credibility * conf
+                * _category_time_factor(cat, hour)
+                * severity_factor
+                / 100.0
+            )
 
-            issue_penalty = min(issue_penalty, 50.0)
+            issue_penalty = min(issue_penalty, 60.0)
 
         mode_penalty = _mode_edge_penalty(data, mode)
 
         # Ambient darkness penalty: at night, unlit/unknown-lit roads are inherently less safe.
-        # This shifts the BASE score at night, not just the issue penalty, so routing
-        # actively seeks lit roads even without any reported issues nearby.
-        is_night = (hour >= 19 or hour < 6)
+        # Pedestrians are most vulnerable (no headlights), cyclists intermediate, drivers least.
+        is_night = (hour >= 18 or hour < 6)
         if is_night:
             lit = data.get('lit')
             if lit in ('yes', '24/7'):
                 dark_penalty = 0.0
-            elif lit == 'no':
-                dark_penalty = 20.0   # confirmed dark road
-            else:
-                dark_penalty = 8.0    # unknown — majority of Indian roads lack lit tag
+            elif lit == 'no':   # confirmed dark road — scale by mode vulnerability
+                dark_penalty = 25.0 if mode == 'walk' else (18.0 if mode == 'cycle' else 10.0)
+            else:               # unknown lit tag — most Indian roads lack this
+                dark_penalty = 12.0 if mode == 'walk' else (8.0 if mode == 'cycle' else 4.0)
         else:
             dark_penalty = 0.0
 
@@ -916,8 +944,14 @@ def get_routes(
     except nx.NetworkXNoPath:
         safe_nodes = []
 
+    def _fast_w(u, v, d):
+        return min(
+            float(d[k].get('length', 1.0)) / max(_edge_speed_kmh(d[k], mode), 1.0)
+            for k in d
+        )
+
     try:
-        fast_nodes = nx.shortest_path(g_proj, orig_node, dest_node, weight='length')
+        fast_nodes = nx.shortest_path(g_proj, orig_node, dest_node, weight=_fast_w)
     except nx.NetworkXNoPath:
         fast_nodes = []
 

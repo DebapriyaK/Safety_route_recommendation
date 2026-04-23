@@ -9,7 +9,7 @@ for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8000 "') do (
 timeout /t 2 /nobreak >nul
 
 echo Starting SafeRoute backend...
-start "SafeRoute Backend" cmd /k "cd /d "%~dp0" && python -m uvicorn backend.main:app --reload"
+start "SafeRoute Backend" cmd /k "cd /d "%~dp0" && python -m uvicorn backend.main:app --reload --host 0.0.0.0"
 
 echo Waiting for server to be ready...
 timeout /t 6 /nobreak >nul

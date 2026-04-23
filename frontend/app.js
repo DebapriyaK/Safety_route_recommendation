@@ -9,10 +9,17 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
 
-const LS_LAST_SEARCH = 'sr_last_search';
-const LS_SAVED_ROUTES = 'sr_saved_routes';
-const LS_TRACKING_ENABLED = 'sr_tracking_enabled';
-const LS_SEARCH_MEMORY = 'sr_search_memory';
+const LS_LAST_SEARCH = 'last_search';
+const LS_SAVED_ROUTES = 'saved_routes';
+const LS_TRACKING_ENABLED = 'tracking_enabled';
+const LS_SEARCH_MEMORY = 'search_memory';
+
+// All user-facing storage is namespaced by user ID so two users on the same
+// browser never see each other's search history, saved routes, or preferences.
+function lsKey(base) {
+  const uid = currentUser?.id || 'guest';
+  return `sr_${uid}_${base}`;
+}
 const SEARCH_RECENT_LIMIT = 6;
 const SEARCH_COMMON_LIMIT = 6;
 const LIVE_NAV_ARRIVAL_M = 30;
@@ -26,7 +33,7 @@ let currentUser = null;
 let originCoords = null;
 let destCoords = null;
 let lastRoutePayload = null;
-let trackingEnabled = localStorage.getItem(LS_TRACKING_ENABLED) === '1';
+let trackingEnabled = false; // loaded from user-scoped storage in init() after user is known
 const shownValidationSet = new Set();
 let _watchId = null;
 let _navWatchId = null;
@@ -38,6 +45,7 @@ let _liveRouteCoords = [];
 let _liveRouteSteps = [];
 let _liveRouteTotalM = 0;
 let _liveRouteMode = 'walk';
+let _activeSheetTab = 'safe';
 
 function showLoading(msg) {
   const el = document.getElementById('loading-overlay');
@@ -125,7 +133,7 @@ function _normalizePlaceKey(text) {
 
 function getSearchMemory() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(LS_SEARCH_MEMORY) || '{}');
+    const parsed = JSON.parse(localStorage.getItem(lsKey(LS_SEARCH_MEMORY)) || '{}');
     const base = _emptySearchMemory();
     return {
       origin: parsed.origin || base.origin,
@@ -138,7 +146,7 @@ function getSearchMemory() {
 }
 
 function setSearchMemory(memory) {
-  localStorage.setItem(LS_SEARCH_MEMORY, JSON.stringify(memory));
+  localStorage.setItem(lsKey(LS_SEARCH_MEMORY), JSON.stringify(memory));
 }
 
 function rememberPlace(kind, label, coords = null) {
@@ -234,7 +242,7 @@ function resolveRememberedPlace(kind, text) {
 }
 
 function saveLastSearch(originText, destText, mode, originResolved = null, destResolved = null) {
-  localStorage.setItem(LS_LAST_SEARCH, JSON.stringify({ mode }));
+  localStorage.setItem(lsKey(LS_LAST_SEARCH), JSON.stringify({ mode }));
   const mem = getSearchMemory();
   mem.lastMode = mode || 'walk';
   setSearchMemory(mem);
@@ -244,7 +252,7 @@ function saveLastSearch(originText, destText, mode, originResolved = null, destR
 
 function restoreLastSearch() {
   try {
-    const raw = localStorage.getItem(LS_LAST_SEARCH);
+    const raw = localStorage.getItem(lsKey(LS_LAST_SEARCH));
     const mem = getSearchMemory();
     const obj = raw ? JSON.parse(raw) : {};
     document.getElementById('originInput').value = '';
@@ -515,6 +523,15 @@ async function getRoutesFromInput() {
     if (routeLayer)        { map.removeLayer(routeLayer);        routeLayer        = null; }
     if (markerLayer)       { map.removeLayer(markerLayer);       markerLayer       = null; }
     if (issueClusterLayer) { map.removeLayer(issueClusterLayer); issueClusterLayer = null; }
+    if (
+      Math.abs(origin_lat - dest_lat) < 0.0001 &&
+      Math.abs(origin_lon - dest_lon) < 0.0001
+    ) {
+      hideLoading();
+      showToast('Origin and destination appear to be the same place. Please choose different locations.');
+      return;
+    }
+
     const summaryEl = document.getElementById('route-summary');
     if (summaryEl) summaryEl.style.display = 'none';
 
@@ -529,11 +546,23 @@ async function getRoutesFromInput() {
       headers: authHeaders(),
       body: JSON.stringify({ origin_lat, origin_lon, dest_lat, dest_lon, mode }),
     });
+    if (res.status === 401) {
+      hideLoading();
+      showToast('Session expired. Please log in again.');
+      setTimeout(() => (window.location.href = 'login.html'), 1500);
+      return;
+    }
     const data = await res.json();
     hideLoading();
 
     if (!data || data.error || data.type !== 'FeatureCollection') {
       showToast(data?.error || 'No route found. Try nearby locations.');
+      const summaryEl2 = document.getElementById('route-summary');
+      if (summaryEl2) {
+        summaryEl2.style.display = 'none';
+        summaryEl2.classList.remove('sheet-open', 'sheet-peek');
+      }
+      document.body.classList.remove('sheet-active');
       return;
     }
 
@@ -558,26 +587,34 @@ async function getRoutesFromInput() {
     hideLoading();
     console.error('Route error:', err);
     showToast('Something went wrong. Is the backend running?');
+    const summaryEl = document.getElementById('route-summary');
+    if (summaryEl) {
+      summaryEl.style.display = 'none';
+      summaryEl.classList.remove('sheet-open', 'sheet-peek');
+    }
+    document.body.classList.remove('sheet-active');
   }
 }
 
 function routeCard(p, type) {
+  const mobile = window.innerWidth <= 768;
   const label = type === 'safe' ? 'Safe' : 'Fast';
   const border = type === 'safe' ? '#27ae60' : '#e67e22';
   const color = scoreColor(p.safety_score);
   const issues = p.issues_on_path ?? 0;
   return `
-    <div class="route-card" style="border-left:4px solid ${border}">
+    <div class="route-card" id="route-card-${type}" style="border-left:4px solid ${border}">
       <div class="rc-label">${label}</div>
       <div class="rc-row">Safety <span style="color:${color};font-weight:700">${p.safety_score}/100</span></div>
       <div class="rc-row">Distance <span>${p.distance_km} km</span></div>
       <div class="rc-row">Time <span>~${formatMinutes(p.duration_min)} min</span></div>
       <div class="rc-row">Issues <span>${issues}</span></div>
-      <div style="margin-top:6px;display:flex;gap:6px;">
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
         <button class="small-btn" onclick="saveCurrentRoute('${type}')">Save</button>
-        <button class="small-btn" onclick="showSteps('${type}')">Steps</button>
-        <button class="small-btn" onclick="startLiveNavigation('${type}')">Live</button>
+        <button class="small-btn" onclick="showSteps('${type}')">${mobile ? 'Directions' : 'Steps'}</button>
+        <button class="small-btn small-btn-primary" onclick="startLiveNavigation('${type}')">${mobile ? 'Start' : 'Live'}</button>
       </div>
+      ${mobile ? '<div class="route-card-hint">Preview directions first. Live location starts only after tapping Start.</div>' : ''}
     </div>
   `;
 }
@@ -590,6 +627,7 @@ function formatMinutes(value) {
 
 function drawRoutes(data) {
   stopLiveNavigation(true);
+  shownValidationSet.clear();
 
   if (routeLayer) map.removeLayer(routeLayer);
 
@@ -633,37 +671,66 @@ function drawRoutes(data) {
   const safeProps = features.find((f) => f.properties?.route_type === 'safe')?.properties;
   const fastProps = features.find((f) => f.properties?.route_type === 'fast')?.properties;
   const sameRoute = Boolean(data?.metadata?.same_route);
+  const mobile = window.innerWidth <= 768;
 
   const summaryEl = document.getElementById('route-summary');
   if (!summaryEl || !safeProps) return;
 
-  if (sameRoute || !fastProps) {
-    summaryEl.style.display = 'block';
-    if (window.innerWidth <= 768) summaryEl.classList.add('sheet-open');
-    summaryEl.innerHTML = `
-      <h4 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;">Route Result</h4>
-      <div style="margin-bottom:8px;padding:8px;border-radius:8px;background:#ecfdf3;color:#0f5132;font-size:12px;">
-        The safest route is also the fastest here.
-      </div>
-      <div class="route-cards">${routeCard(safeProps, 'safe')}</div>
-      <div id="live-nav-panel" style="margin-top:10px;"></div>
-      <div id="steps-panel" style="margin-top:10px;"></div>
-    `;
-  } else {
-    summaryEl.style.display = 'block';
-    if (window.innerWidth <= 768) summaryEl.classList.add('sheet-open');
-    summaryEl.innerHTML = `
-      <h4 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;">Route Comparison</h4>
-      <div class="route-cards">
-        ${routeCard(safeProps, 'safe')}
-        ${routeCard(fastProps, 'fast')}
-      </div>
-      <div id="live-nav-panel" style="margin-top:10px;"></div>
-      <div id="steps-panel" style="margin-top:10px;"></div>
-    `;
-  }
+  summaryEl.style.display = 'block';
+  summaryEl.classList.remove('sheet-open', 'sheet-peek');
 
-  showSteps('safe');
+  if (mobile) {
+    const hasFast = !sameRoute && Boolean(fastProps);
+    _activeSheetTab = 'safe';
+    summaryEl.innerHTML = `
+      <div id="sheet-handle"></div>
+      <div class="sheet-tab-row">
+        <button class="sheet-tab sheet-tab-safe active" id="tab-safe" onclick="selectSheetTab('safe')">🛡️ Safe</button>
+        ${hasFast ? `<button class="sheet-tab sheet-tab-fast" id="tab-fast" onclick="selectSheetTab('fast')">⚡ Fast</button>` : ''}
+        <div class="sheet-quick-btns">
+          <button class="small-btn" onclick="showSteps(_activeSheetTab)">Directions</button>
+          <button class="small-btn small-btn-primary" onclick="startLiveNavigation(_activeSheetTab)">Start</button>
+        </div>
+      </div>
+      <div id="sheet-detail">
+        ${sameRoute ? `<div style="margin-bottom:8px;padding:8px;border-radius:8px;background:#ecfdf3;color:#0f5132;font-size:12px;">Safest route is also the fastest here.</div>` : ''}
+        <div class="route-cards">
+          ${routeCard(safeProps, 'safe')}
+          ${hasFast ? routeCard(fastProps, 'fast') : ''}
+        </div>
+      </div>
+      <div id="live-nav-panel" style="margin-top:10px;"></div>
+      <div id="steps-panel" style="margin-top:10px;"></div>
+    `;
+    requestAnimationFrame(() => {
+      summaryEl.classList.add('sheet-peek');
+      initSheetDrag(summaryEl);
+      document.body.classList.add('sheet-active');
+    });
+  } else {
+    if (sameRoute || !fastProps) {
+      summaryEl.innerHTML = `
+        <h4 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;">Route Result</h4>
+        <div style="margin-bottom:8px;padding:8px;border-radius:8px;background:#ecfdf3;color:#0f5132;font-size:12px;">
+          The safest route is also the fastest here.
+        </div>
+        <div class="route-cards">${routeCard(safeProps, 'safe')}</div>
+        <div id="live-nav-panel" style="margin-top:10px;"></div>
+        <div id="steps-panel" style="margin-top:10px;"></div>
+      `;
+    } else {
+      summaryEl.innerHTML = `
+        <h4 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;">Route Comparison</h4>
+        <div class="route-cards">
+          ${routeCard(safeProps, 'safe')}
+          ${routeCard(fastProps, 'fast')}
+        </div>
+        <div id="live-nav-panel" style="margin-top:10px;"></div>
+        <div id="steps-panel" style="margin-top:10px;"></div>
+      `;
+    }
+    showSteps('safe');
+  }
 }
 
 function showSteps(type) {
@@ -678,6 +745,11 @@ function showSteps(type) {
     panel.innerHTML = '';
     return;
   }
+
+  document.querySelectorAll('.route-card').forEach((card) => {
+    card.classList.remove('route-card-active');
+  });
+  document.getElementById(`route-card-${type}`)?.classList.add('route-card-active');
 
   panel.innerHTML = `
     <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">${title}</div>
@@ -824,6 +896,9 @@ function updateLiveNavigation(position) {
     _liveTrail = L.polyline([ll], { color: '#1d4ed8', weight: 3, opacity: 0.7 }).addTo(map);
   } else {
     _liveTrail.addLatLng(ll);
+    // Keep trail to last 150 points to avoid memory/render issues on long trips
+    const pts = _liveTrail.getLatLngs();
+    if (pts.length > 150) _liveTrail.setLatLngs(pts.slice(pts.length - 150));
   }
 
   const nearest = nearestPointOnRoute(userLat, userLon, _liveRouteCoords);
@@ -859,6 +934,27 @@ function updateLiveNavigation(position) {
   }
 }
 
+let _pendingNavType = null;
+
+function showLocationConfirm(type) {
+  _pendingNavType = type;
+  const dialog = document.getElementById('location-dialog');
+  if (dialog) { dialog.style.display = 'flex'; }
+}
+
+function dismissLocationDialog() {
+  const dialog = document.getElementById('location-dialog');
+  if (dialog) dialog.style.display = 'none';
+  _pendingNavType = null;
+}
+
+function confirmLocationDialog() {
+  const dialog = document.getElementById('location-dialog');
+  if (dialog) dialog.style.display = 'none';
+  if (_pendingNavType) beginLiveNavigation(_pendingNavType);
+  _pendingNavType = null;
+}
+
 function startLiveNavigation(type = 'safe') {
   const feature = getRouteFeature(type);
   if (!feature?.geometry?.coordinates?.length) {
@@ -869,6 +965,12 @@ function startLiveNavigation(type = 'safe') {
     showToast('Geolocation is not supported on this browser/device.');
     return;
   }
+  showLocationConfirm(type);
+}
+
+function beginLiveNavigation(type) {
+  const feature = getRouteFeature(type);
+  if (!feature) return;
 
   const coords = feature.geometry.coordinates;
   _liveRouteType = type;
@@ -879,7 +981,6 @@ function startLiveNavigation(type = 'safe') {
 
   if (_navWatchId !== null) stopLiveNavigation(true);
 
-  showToast('Requesting location permission for live navigation...');
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       updateLiveNavigation(pos);
@@ -894,50 +995,77 @@ function startLiveNavigation(type = 'safe') {
       showToast(`Live navigation started for ${type} route.`);
     },
     () => {
-      showToast('Location permission denied. Enable it to use live navigation.');
+      showToast('Location permission denied. Enable it in your browser settings to use live navigation.');
       stopLiveNavigation(true);
     },
     { enableHighAccuracy: true, timeout: 12000 }
   );
 }
 
+// Server-side saved routes cache (populated on init for logged-in users)
+let _savedRoutesCache = [];
+
 function getSavedRoutes() {
+  return _savedRoutesCache;
+}
+
+async function loadSavedRoutesFromServer() {
+  if (!currentUser) { _savedRoutesCache = []; return; }
   try {
-    return JSON.parse(localStorage.getItem(LS_SAVED_ROUTES) || '[]');
+    const res = await fetch(`${API_BASE}/saved-routes`, { headers: authHeaders(false) });
+    if (res.ok) _savedRoutesCache = await res.json();
+  } catch {}
+}
+
+async function deleteSavedRoute(routeId) {
+  try {
+    await fetch(`${API_BASE}/saved-routes/${routeId}`, {
+      method: 'DELETE', headers: authHeaders(false),
+    });
+    _savedRoutesCache = _savedRoutesCache.filter((r) => r.id !== routeId);
+    showToast('Saved route removed.');
   } catch {
-    return [];
+    showToast('Failed to remove saved route.');
   }
 }
 
-function setSavedRoutes(routes) {
-  localStorage.setItem(LS_SAVED_ROUTES, JSON.stringify(routes));
-}
-
-function saveCurrentRoute(type) {
+async function saveCurrentRoute(type) {
   if (!lastRoutePayload?.data) return;
+  if (!currentUser) { showToast('Login to save routes.'); return; }
   const feature = (lastRoutePayload.data.features || []).find((f) => f.properties?.route_type === type);
   if (!feature?.geometry?.coordinates?.length) {
     showToast('No route to save yet.');
     return;
   }
 
-  const routes = getSavedRoutes();
-  routes.unshift({
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    created_at: new Date().toISOString(),
-    type,
-    mode: lastRoutePayload.mode,
-    origin: lastRoutePayload.origin,
-    destination: lastRoutePayload.destination,
-    coordinates: feature.geometry.coordinates,
-    seen_issue_ids: [],
-  });
-  if (routes.length > 10) routes.length = 10;
-  setSavedRoutes(routes);
-  showToast(`Saved ${type} route for quick alerts.`);
+  try {
+    const body = {
+      origin_lat: lastRoutePayload.origin.lat,
+      origin_lon: lastRoutePayload.origin.lon,
+      dest_lat: lastRoutePayload.destination.lat,
+      dest_lon: lastRoutePayload.destination.lon,
+      origin_label: lastRoutePayload.origin.label || '',
+      dest_label: lastRoutePayload.destination.label || '',
+      mode: lastRoutePayload.mode,
+    };
+    const res = await fetch(`${API_BASE}/saved-routes`, {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.detail || 'Could not save route.');
+      return;
+    }
+    const saved = await res.json();
+    _savedRoutesCache.unshift(saved);
+    showToast(`Saved ${type} route for quick alerts.`);
+  } catch {
+    showToast('Failed to save route.');
+  }
 }
 
 async function checkSavedRouteAlerts() {
+  if (!currentUser) return;
   const routes = getSavedRoutes();
   if (!routes.length) return;
 
@@ -946,32 +1074,27 @@ async function checkSavedRouteAlerts() {
     const issues = await res.json();
     if (!Array.isArray(issues)) return;
 
-    let changed = false;
     for (const route of routes) {
-      const seen = new Set(route.seen_issue_ids || []);
-      const nearNew = [];
-      for (const issue of issues) {
-        const coords = route.coordinates || [];
-        let isNear = false;
-        for (const p of coords) {
-          const d = metersBetween(issue.lat, issue.lon, p[1], p[0]);
-          if (d <= 50) {
-            isNear = true;
-            break;
-          }
-        }
-        if (isNear && !seen.has(issue.id)) nearNew.push(issue.id);
-      }
+      // Seen-issue tracking lives in localStorage keyed by server route id
+      const seenKey = `sr_alert_seen_${route.id}`;
+      const seen = new Set(JSON.parse(localStorage.getItem(seenKey) || '[]'));
+
+      // Check issues within a generous bounding box around the route corridor
+      const latMin = Math.min(route.origin_lat, route.dest_lat) - 0.001;
+      const latMax = Math.max(route.origin_lat, route.dest_lat) + 0.001;
+      const lonMin = Math.min(route.origin_lon, route.dest_lon) - 0.001;
+      const lonMax = Math.max(route.origin_lon, route.dest_lon) + 0.001;
+
+      const nearNew = issues.filter(
+        (i) => i.lat >= latMin && i.lat <= latMax && i.lon >= lonMin && i.lon <= lonMax && !seen.has(i.id)
+      );
 
       if (nearNew.length) {
-        nearNew.forEach((id) => seen.add(id));
-        route.seen_issue_ids = Array.from(seen);
-        changed = true;
-        showToast(`New issue(s) near saved ${route.type} route: ${nearNew.length}`);
+        nearNew.forEach((i) => seen.add(i.id));
+        localStorage.setItem(seenKey, JSON.stringify(Array.from(seen)));
+        showToast(`${nearNew.length} new issue(s) near your saved route "${route.label}".`);
       }
     }
-
-    if (changed) setSavedRoutes(routes);
   } catch {}
 }
 
@@ -1050,7 +1173,7 @@ map.on('click', function (e) {
   L.popup()
     .setLatLng(e.latlng)
     .setContent(`
-      <div style="min-width:200px">
+      <div style="min-width:210px">
         <b style="font-size:14px">Report Issue</b><br><br>
         <label style="font-size:12px;color:#555">Category</label><br>
         <select id="issue-category" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
@@ -1059,7 +1182,13 @@ map.on('click', function (e) {
           <option>Narrow Lane</option>
           <option>Unsafe Area</option>
           <option>Other</option>
-        </select><br>
+        </select>
+        <label style="font-size:12px;color:#555">Severity</label><br>
+        <select id="issue-severity" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
+          <option value="low">Low — minor inconvenience</option>
+          <option value="medium" selected>Medium — noticeable hazard</option>
+          <option value="high">High — serious danger</option>
+        </select>
         <label style="font-size:12px;color:#555">Description (optional)</label><br>
         <input id="issue-desc" placeholder="Brief description..." style="width:100%;padding:5px;margin-bottom:10px;border-radius:5px;border:1px solid #ddd;font-size:13px"/><br>
         <button onclick="submitIssue(${lat}, ${lng})" style="width:100%;padding:8px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Submit Report</button>
@@ -1070,13 +1199,14 @@ map.on('click', function (e) {
 
 async function submitIssue(lat, lon) {
   const category = document.getElementById('issue-category')?.value || 'Other';
+  const severity = document.getElementById('issue-severity')?.value || 'medium';
   const description = document.getElementById('issue-desc')?.value || '';
 
   try {
     const res = await fetch(`${API_BASE}/issues`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ lat, lon, category, description }),
+      body: JSON.stringify({ lat, lon, category, severity, description }),
     });
 
     if (res.status === 401) {
@@ -1105,11 +1235,23 @@ async function submitIssue(lat, lon) {
 }
 
 async function validateIssue(issueId, response) {
+  // Attach current GPS position so the backend can weight nearby validations more heavily
+  let userLat = null, userLon = null;
+  if (navigator.geolocation) {
+    await new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { userLat = pos.coords.latitude; userLon = pos.coords.longitude; resolve(); },
+        () => resolve(),
+        { enableHighAccuracy: false, timeout: 3000 }
+      );
+    });
+  }
+
   try {
     const res = await fetch(`${API_BASE}/issues/${issueId}/validate`, {
       method: 'PATCH',
       headers: authHeaders(),
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ response, user_lat: userLat, user_lon: userLon }),
     });
 
     if (res.status === 401) {
@@ -1149,6 +1291,28 @@ function showValidationPopup(issueId, latlng) {
     .openOn(map);
 }
 
+function useMyLocation() {
+  if (!navigator.geolocation) {
+    showToast('Geolocation is not supported by your browser.');
+    return;
+  }
+  showLoading('Getting your location...');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      hideLoading();
+      const { latitude, longitude } = pos.coords;
+      originCoords = { lat: latitude, lon: longitude };
+      document.getElementById('originInput').value = 'My Location';
+      document.getElementById('originInput-list').style.display = 'none';
+    },
+    () => {
+      hideLoading();
+      showToast('Could not get your location. Check browser permissions.');
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
 function stopPositionWatch() {
   if (_watchId !== null && navigator.geolocation) {
     navigator.geolocation.clearWatch(_watchId);
@@ -1171,6 +1335,7 @@ function startPositionWatch() {
         const issueId = layer._issueId;
         const meta = layer._issueMeta;
         if (!issueId || !isAmbiguousIssue(meta)) return;
+        if (meta.reporter_id && currentUser && meta.reporter_id === currentUser.id) return;
 
         const dist = userLatLng.distanceTo(layer.getLatLng());
         if (dist < 70 && !shownValidationSet.has(issueId)) {
@@ -1187,10 +1352,22 @@ function startPositionWatch() {
 function syncTrackingUI() {
   const toggle = document.getElementById('toggle-tracking');
   if (!toggle) return;
+
+  if (!currentUser) {
+    toggle.checked = false;
+    toggle.disabled = true;
+    toggle.closest?.('.toggle-row')?.setAttribute('title', 'Login to enable nearby issue prompts');
+    return;
+  }
+
+  // Now that currentUser is known, read the user-scoped preference
+  trackingEnabled = localStorage.getItem(lsKey(LS_TRACKING_ENABLED)) === '1';
   toggle.checked = trackingEnabled;
+  toggle.disabled = false;
+
   toggle.addEventListener('change', () => {
     trackingEnabled = !!toggle.checked;
-    localStorage.setItem(LS_TRACKING_ENABLED, trackingEnabled ? '1' : '0');
+    localStorage.setItem(lsKey(LS_TRACKING_ENABLED), trackingEnabled ? '1' : '0');
     if (trackingEnabled) {
       showToast('Nearby issue prompts enabled.');
       startPositionWatch();
@@ -1213,6 +1390,7 @@ setInterval(async () => {
       const issueId = layer._issueId;
       const meta = layer._issueMeta;
       if (!issueId || !isAmbiguousIssue(meta)) return;
+      if (meta.reporter_id && currentUser && meta.reporter_id === currentUser.id) return;
       const dist = userLatLng.distanceTo(layer.getLatLng());
       if (dist < 200 && !shownValidationSet.has(issueId)) {
         shownValidationSet.add(issueId);
@@ -1222,16 +1400,130 @@ setInterval(async () => {
   });
 }, 5 * 60 * 1000);
 
-function selectMode(mode) {
+function logout() {
+  // Stop all live tracking before clearing auth
+  stopLiveNavigation(true);
+  stopPositionWatch();
+  // Clear in-memory state that must not bleed into the next user's session
+  shownValidationSet.clear();
+  issueMode = false;
+  trackingEnabled = false;
+  currentUser = null;
+  // Clear auth tokens
+  clearToken();
+  clearUser();
+  window.location.href = 'login.html';
+}
+
+function selectMode(mode, fromUser = false) {
   document.getElementById('mode').value = mode;
   document.querySelectorAll('.mode-pill').forEach((p) =>
     p.classList.toggle('active', p.dataset.mode === mode)
   );
+  if (fromUser && currentUser) {
+    fetch(`${API_BASE}/auth/profile/mode?mode=${encodeURIComponent(mode)}`, {
+      method: 'PATCH', headers: authHeaders(false),
+    }).catch(() => {});
+  }
+  if (lastRoutePayload) getRoutesFromInput();
+}
+
+function initSheetDrag(summary) {
+  const handle = document.getElementById('sheet-handle');
+  if (!handle || !summary) return;
+
+  let startY = null;
+  let startIsOpen = false;
+  let sheetH = 0;
+  let wasDrag = false;
+
+  function dragStart(clientY) {
+    startY = clientY;
+    startIsOpen = summary.classList.contains('sheet-open');
+    sheetH = summary.offsetHeight;
+    wasDrag = false;
+    summary.style.transition = 'none';
+  }
+
+  function dragMove(clientY) {
+    if (startY === null) return;
+    const deltaY = clientY - startY;
+    if (Math.abs(deltaY) > 8) wasDrag = true;
+    if (!wasDrag) return;
+    const peekPx = sheetH - 100;
+    const ty = startIsOpen
+      ? Math.max(0, Math.min(peekPx, deltaY))
+      : Math.max(0, Math.min(peekPx, peekPx + deltaY));
+    summary.style.transform = `translateY(${ty}px)`;
+  }
+
+  function dragEnd(clientY) {
+    if (startY === null) return;
+    const deltaY = clientY - startY;
+    summary.style.transition = '';
+    summary.style.transform = '';
+
+    if (wasDrag) {
+      if (startIsOpen && deltaY > 60) {
+        summary.classList.remove('sheet-open');
+        summary.classList.add('sheet-peek');
+      } else if (!startIsOpen && deltaY < -60) {
+        summary.classList.remove('sheet-peek');
+        summary.classList.add('sheet-open');
+      }
+    } else {
+      toggleBottomSheet();
+    }
+    startY = null;
+  }
+
+  // Touch events (real phone)
+  handle.addEventListener('touchstart', (e) => dragStart(e.touches[0].clientY), { passive: true });
+  document.addEventListener('touchmove', (e) => dragMove(e.touches[0].clientY), { passive: true });
+  document.addEventListener('touchend', (e) => dragEnd(e.changedTouches[0].clientY), { passive: true });
+
+  // Mouse events (laptop browser / mobile preview iframe)
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragStart(e.clientY);
+    function onMove(ev) { dragMove(ev.clientY); }
+    function onUp(ev) {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      dragEnd(ev.clientY);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 }
 
 function closeBottomSheet() {
   const el = document.getElementById('route-summary');
-  if (el) el.classList.remove('sheet-open');
+  if (!el) return;
+  el.classList.remove('sheet-open');
+  el.classList.add('sheet-peek');
+}
+
+function toggleBottomSheet() {
+  const summary = document.getElementById('route-summary');
+  if (!summary) return;
+  if (summary.classList.contains('sheet-peek')) {
+    summary.classList.remove('sheet-peek');
+    summary.classList.add('sheet-open');
+  } else {
+    summary.classList.remove('sheet-open');
+    summary.classList.add('sheet-peek');
+  }
+}
+
+function selectSheetTab(type) {
+  if (!getRouteFeature(type)) return; // route type doesn't exist, ignore tap
+  _activeSheetTab = type;
+  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`tab-${type}`)?.classList.add('active');
+  if (document.getElementById('route-summary')?.classList.contains('sheet-open')) {
+    showSteps(type);
+  }
 }
 
 function wireControls() {
@@ -1259,6 +1551,11 @@ async function init() {
   currentUser = await verifyToken();
   updateNavbar(currentUser);
 
+  // Restore preferred mode from server profile (before restoreLastSearch so it can override)
+  if (currentUser?.preferred_mode) {
+    selectMode(currentUser.preferred_mode);
+  }
+
   wireControls();
   syncTrackingUI();
 
@@ -1274,6 +1571,7 @@ async function init() {
 
   if (currentUser && trackingEnabled) startPositionWatch();
 
+  await loadSavedRoutesFromServer();
   await checkSavedRouteAlerts();
   registerServiceWorker();
 
@@ -1281,4 +1579,3 @@ async function init() {
 }
 
 init();
-
