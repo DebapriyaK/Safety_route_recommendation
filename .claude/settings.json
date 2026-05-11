@@ -15,7 +15,8 @@
       "Bash(python -c \"import docx; print\\('python-docx available'\\)\")",
       "Bash(Get-ChildItem -Path \"d:\\\\College Stuff\\\\SEM6\\\\swe\\\\test\" -Recurse -File)",
       "Bash(Select-Object FullName)",
-      "Bash(Sort-Object FullName)"
+      "Bash(Sort-Object FullName)",
+      "Bash(git check-ignore *)"
     ],
     "additionalDirectories": [
       "d:\\College Stuff\\SEM6\\swe\\test\\backend\\graph_store"
