@@ -8,6 +8,8 @@ from typing import Optional
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import Response
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -31,7 +33,7 @@ from backend.config import (
     ROUTE_RATE_LIMIT,
     validate_runtime_config,
 )
-from backend.database import SessionLocal, create_tables, get_db
+from backend.database import SessionLocal, create_tables, engine, get_db
 from backend.issues import deactivate_stale_issues, router as issues_router
 from backend.models import Issue, RouteEvent
 from backend.routing import get_routes, preload_city_graphs
@@ -61,6 +63,34 @@ async def _routing_preload_startup() -> None:
         print(f'[routing-preload] failed: {exc}')
 
 
+def _migrate_new_columns() -> None:
+    """Add new columns to existing tables safely (idempotent on PostgreSQL)."""
+    stmts = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(128)",
+    ]
+    try:
+        with engine.connect() as conn:
+            for stmt in stmts:
+                conn.execute(text(stmt))
+            conn.commit()
+        print('[migration] Column migration completed')
+    except Exception as exc:
+        print(f'[migration] Skipped (non-PostgreSQL or already current): {exc}')
+
+
+def _ensure_admin(db) -> None:
+    """Set hardcoded email + verified status for the admin user."""
+    from backend.models import User
+    admin = db.query(User).filter(User.username == 'admin').first()
+    if admin:
+        admin.email = 'debapriya0102@gmail.com'
+        admin.email_verified = True
+        admin.verification_token = None
+        db.commit()
+        print('[startup] Admin user email set and verified')
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if AUTO_CREATE_TABLES:
@@ -68,6 +98,8 @@ async def lifespan(app: FastAPI):
         print('[startup] AUTO_CREATE_TABLES enabled; schema auto-create executed')
     else:
         print('[startup] AUTO_CREATE_TABLES disabled; expecting Alembic-managed schema')
+
+    _migrate_new_columns()
 
     warnings = validate_runtime_config()
     for w in warnings:
@@ -78,6 +110,7 @@ async def lifespan(app: FastAPI):
         cleaned = deactivate_stale_issues(db)
         if cleaned:
             print(f"[issues] auto-deactivated {cleaned} stale issues on startup")
+        _ensure_admin(db)
     except Exception as exc:
         print(f"[startup] DB not ready yet, skipping issue cleanup: {exc}")
     finally:
@@ -114,6 +147,16 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware('http')
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
 
 allow_origins = ['*'] if ALLOW_ALL_CORS else CORS_ORIGINS
 app.add_middleware(

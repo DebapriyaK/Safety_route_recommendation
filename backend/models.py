@@ -31,6 +31,8 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, default=True, nullable=False)
+    email_verified = Column(Boolean, default=False, nullable=False)
+    verification_token = Column(String(128), nullable=True)
     reputation_score = Column(Float, default=1.0, nullable=False)
     preferred_mode = Column(String(16), default='walk', nullable=False)
 

@@ -32,6 +32,8 @@ let heatmapLayer = null;
 let currentUser = null;
 let originCoords = null;
 let destCoords = null;
+let _originPin = null;
+let _destPin = null;
 let lastRoutePayload = null;
 let trackingEnabled = false; // loaded from user-scoped storage in init() after user is known
 const shownValidationSet = new Set();
@@ -526,6 +528,8 @@ async function getRoutesFromInput() {
     if (routeLayer)        { map.removeLayer(routeLayer);        routeLayer        = null; }
     if (markerLayer)       { map.removeLayer(markerLayer);       markerLayer       = null; }
     if (issueClusterLayer) { map.removeLayer(issueClusterLayer); issueClusterLayer = null; }
+    if (_originPin)        { map.removeLayer(_originPin);        _originPin        = null; }
+    if (_destPin)          { map.removeLayer(_destPin);          _destPin          = null; }
     if (
       Math.abs(origin_lat - dest_lat) < 0.0001 &&
       Math.abs(origin_lon - dest_lon) < 0.0001
@@ -1187,6 +1191,26 @@ function enableIssueMode() {
   map.getContainer().style.cursor = 'crosshair';
 }
 
+map.on('contextmenu', function (e) {
+  if (issueMode) return;
+  const { lat, lng } = e.latlng;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'text-align:center;min-width:160px';
+  const coords = document.createElement('div');
+  coords.style.cssText = 'font-size:11px;color:#6b7280;margin-bottom:8px';
+  coords.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  const btnO = document.createElement('button');
+  btnO.textContent = '📍 Set as Origin';
+  btnO.style.cssText = 'display:block;width:100%;margin-bottom:6px;padding:7px 10px;background:#22c55e;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px';
+  const btnD = document.createElement('button');
+  btnD.textContent = '🏁 Set as Destination';
+  btnD.style.cssText = 'display:block;width:100%;padding:7px 10px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px';
+  wrap.append(coords, btnO, btnD);
+  const popup = L.popup().setLatLng(e.latlng).setContent(wrap).openOn(map);
+  btnO.onclick = () => { setMapPoint('origin', lat, lng); map.closePopup(popup); };
+  btnD.onclick = () => { setMapPoint('dest', lat, lng); map.closePopup(popup); };
+});
+
 map.on('click', function (e) {
   if (!issueMode) return;
   issueMode = false;
@@ -1354,6 +1378,7 @@ function useMyLocation() {
       originCoords = { lat: latitude, lon: longitude };
       document.getElementById('originInput').value = 'My Location';
       document.getElementById('originInput-list').style.display = 'none';
+      _placePin('origin', latitude, longitude);
     },
     () => {
       hideLoading();
@@ -1598,6 +1623,45 @@ async function registerServiceWorker() {
   } catch {}
 }
 
+function _placePin(type, lat, lon) {
+  const isOrigin = type === 'origin';
+  const fillColor = isOrigin ? '#22c55e' : '#e74c3c';
+  const label = isOrigin ? 'Start' : 'Destination';
+  if (isOrigin) {
+    if (_originPin) map.removeLayer(_originPin);
+    _originPin = L.circleMarker([lat, lon], {
+      radius: 11, color: '#fff', weight: 3, fillColor, fillOpacity: 1,
+    }).bindPopup(`<b>${label}</b>`).addTo(map);
+  } else {
+    if (_destPin) map.removeLayer(_destPin);
+    _destPin = L.circleMarker([lat, lon], {
+      radius: 11, color: '#fff', weight: 3, fillColor, fillOpacity: 1,
+    }).bindPopup(`<b>${label}</b>`).addTo(map);
+  }
+  if (_originPin && _destPin) {
+    map.fitBounds(
+      L.latLngBounds([_originPin.getLatLng(), _destPin.getLatLng()]),
+      { padding: [70, 70] }
+    );
+  } else {
+    map.flyTo([lat, lon], 15, { animate: true, duration: 0.8 });
+  }
+}
+
+function setMapPoint(type, lat, lon) {
+  const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  if (type === 'origin') {
+    originCoords = { lat, lon };
+    document.getElementById('originInput').value = label;
+    _placePin('origin', lat, lon);
+  } else {
+    destCoords = { lat, lon };
+    document.getElementById('destInput').value = label;
+    _placePin('dest', lat, lon);
+  }
+  if (window.innerWidth <= 768) openMobileSearch();
+}
+
 function openMobileSearch() {
   const trigger = document.getElementById('mobile-search-trigger');
   const sidebar = document.getElementById('sidebar');
@@ -1638,9 +1702,13 @@ async function init() {
 
   setupAutocomplete('originInput', (coords) => {
     originCoords = coords;
+    if (coords) _placePin('origin', coords.lat, coords.lon);
+    else if (_originPin) { map.removeLayer(_originPin); _originPin = null; }
   });
   setupAutocomplete('destInput', (coords) => {
     destCoords = coords;
+    if (coords) _placePin('dest', coords.lat, coords.lon);
+    else if (_destPin) { map.removeLayer(_destPin); _destPin = null; }
   });
 
   if (currentUser && trackingEnabled) startPositionWatch();

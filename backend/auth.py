@@ -13,14 +13,21 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
+from fastapi.responses import RedirectResponse
+
 from backend.config import (
     ACCESS_TOKEN_EXPIRE_HOURS,
     ADMIN_USERNAMES,
     ALGORITHM,
+    APP_URL,
     AUTH_LOGIN_MAX_PER_MINUTE,
     AUTH_REGISTER_MAX_PER_MINUTE,
+    EMAIL_ENABLED,
+    EMAIL_FROM,
+    EMAIL_PASSWORD,
     SECRET_KEY,
 )
+from backend.email_utils import generate_verification_token, send_verification_email
 from backend.database import get_db
 from backend.models import Issue, User, Validation
 
@@ -63,14 +70,17 @@ def _is_admin(username: str) -> bool:
 
 
 def _client_ip(request: Request) -> str:
+    # Use the LAST valid IP in X-Forwarded-For — it is appended by the trusted
+    # reverse proxy (Railway/nginx) and cannot be spoofed by the client.
     xff = request.headers.get('x-forwarded-for')
     if xff:
-        candidate = xff.split(',')[0].strip()
-        try:
-            socket.inet_aton(candidate)  # validates IPv4 format; rejects spoofed garbage
-            return candidate
-        except OSError:
-            pass
+        for candidate in reversed(xff.split(',')):
+            candidate = candidate.strip()
+            try:
+                socket.inet_aton(candidate)
+                return candidate
+            except OSError:
+                pass
     if request.client and request.client.host:
         return request.client.host
     return 'unknown'
@@ -173,7 +183,7 @@ def get_optional_user(
         return None
 
 
-@router.post('/register', response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post('/register', status_code=status.HTTP_201_CREATED)
 def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     _enforce_rate_limit(request, 'register')
 
@@ -192,27 +202,68 @@ def register(body: RegisterRequest, request: Request, db: Session = Depends(get_
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=409, detail='Email already registered')
 
-    user = User(
-        username=body.username,
-        email=body.email,
-        password_hash=pwd_context.hash(body.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    if EMAIL_ENABLED:
+        token = generate_verification_token()
+        user = User(
+            username=body.username,
+            email=body.email,
+            password_hash=pwd_context.hash(body.password),
+            email_verified=False,
+            verification_token=token,
+        )
+        db.add(user)
+        db.commit()
+        ok = send_verification_email(
+            to_email=body.email,
+            username=body.username,
+            token=token,
+            app_url=APP_URL,
+            from_email=EMAIL_FROM,
+            email_password=EMAIL_PASSWORD,
+        )
+        if not ok:
+            db.delete(user)
+            db.commit()
+            raise HTTPException(
+                status_code=503,
+                detail='Account created but verification email could not be sent. Please try again later.',
+            )
+        return {'message': 'Check your email to verify your account.', 'email': body.email}
+    else:
+        user = User(
+            username=body.username,
+            email=body.email,
+            password_hash=pwd_context.hash(body.password),
+            email_verified=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        access_token = create_access_token(user.id, user.username)
+        return TokenResponse(
+            access_token=access_token,
+            user={
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'preferred_mode': user.preferred_mode,
+                'reputation_score': user.reputation_score,
+                'is_admin': _is_admin(user.username),
+            },
+        )
 
-    token = create_access_token(user.id, user.username)
-    return TokenResponse(
-        access_token=token,
-        user={
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'preferred_mode': user.preferred_mode,
-            'reputation_score': user.reputation_score,
-            'is_admin': _is_admin(user.username),
-        },
-    )
+
+@router.get('/verify')
+def verify_email(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        return RedirectResponse(url='/login.html?email_error=invalid_or_expired_link')
+    if user.email_verified:
+        return RedirectResponse(url='/login.html?email_info=already_verified')
+    user.email_verified = True
+    user.verification_token = None
+    db.commit()
+    return RedirectResponse(url='/login.html?verified=1')
 
 
 @router.post('/login', response_model=TokenResponse)
@@ -224,6 +275,8 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail='Invalid username or password')
     if not user.is_active:
         raise HTTPException(status_code=403, detail='Account deactivated')
+    if EMAIL_ENABLED and not user.email_verified:
+        raise HTTPException(status_code=403, detail='Please verify your email before logging in. Check your inbox.')
 
     token = create_access_token(user.id, user.username)
     return TokenResponse(
