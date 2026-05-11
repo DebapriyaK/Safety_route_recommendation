@@ -1,7 +1,9 @@
-"""email_utils.py — verification email sending via Resend API."""
+"""email_utils.py — verification email sending via Gmail SMTP."""
 
 import secrets
-import requests
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
 def generate_verification_token() -> str:
@@ -13,7 +15,8 @@ def send_verification_email(
     username: str,
     token: str,
     app_url: str,
-    api_key: str,
+    from_email: str,
+    email_password: str,
 ) -> bool:
     verify_url = f"{app_url.rstrip('/')}/auth/verify?token={token}"
 
@@ -53,26 +56,19 @@ def send_verification_email(
 </div>
 </body></html>"""
 
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Verify your RouteX account"
+    msg["From"] = f"RouteX <{from_email}>"
+    msg["To"] = to_email
+    msg.attach(MIMEText(text_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
     try:
-        resp = requests.post(
-            'https://api.resend.com/emails',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'from': 'RouteX <onboarding@resend.dev>',
-                'to': [to_email],
-                'subject': 'Verify your RouteX account',
-                'html': html_body,
-                'text': text_body,
-            },
-            timeout=10,
-        )
-        if resp.status_code == 200 or resp.status_code == 201:
-            return True
-        print(f"[email] Resend returned {resp.status_code}: {resp.text}")
-        return False
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
+            server.login(from_email, email_password)
+            server.sendmail(from_email, to_email, msg.as_string())
+        return True
     except Exception as exc:
         print(f"[email] Failed to send to {to_email}: {exc}")
         return False
