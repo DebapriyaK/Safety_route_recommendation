@@ -1470,6 +1470,7 @@ function selectMode(mode, fromUser = false) {
   document.querySelectorAll('.mode-pill').forEach((p) =>
     p.classList.toggle('active', p.dataset.mode === mode)
   );
+  updateMobileModeBadge(mode);
   if (fromUser && currentUser) {
     fetch(`${API_BASE}/auth/profile/mode?mode=${encodeURIComponent(mode)}`, {
       method: 'PATCH', headers: authHeaders(false),
@@ -1595,6 +1596,29 @@ async function registerServiceWorker() {
   try {
     await navigator.serviceWorker.register('/sw.js?v=5');
   } catch {}
+}
+
+function openMobileSearch() {
+  const trigger = document.getElementById('mobile-search-trigger');
+  const sidebar = document.getElementById('sidebar');
+  if (trigger) trigger.style.display = 'none';
+  if (sidebar) sidebar.classList.add('mobile-open', 'expanded');
+  const input = document.getElementById('originInput');
+  if (input) setTimeout(() => input.focus(), 50);
+}
+
+function closeMobileSearch() {
+  const trigger = document.getElementById('mobile-search-trigger');
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) sidebar.classList.remove('mobile-open', 'expanded');
+  if (trigger) trigger.style.display = '';
+}
+
+function updateMobileModeBadge(mode) {
+  const badge = document.getElementById('mobile-mode-badge');
+  if (!badge) return;
+  const icons = { walk: '🚶 Walk', cycle: '🚴 Cycle', drive: '🚗 Drive' };
+  badge.textContent = icons[mode] || '🚶 Walk';
 }
 
 async function init() {
