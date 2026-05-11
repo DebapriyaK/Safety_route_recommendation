@@ -78,8 +78,8 @@ _WALK_UNSAFE_HIGHWAYS = {'motorway', 'motorway_link', 'trunk', 'trunk_link'}
 # strips genuinely non-pedestrian edges, giving walk routing the correct road set.
 _WALK_CUSTOM_FILTER = (
     '["highway"~"footway|path|pedestrian|steps|corridor|living_street|residential|'
-    'tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|unclassified|service"]'
-    '["area"!~"yes"]["access"!~"private"]["foot"!~"no"]["service"!~"private"]'
+    'tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|unclassified|service|track"]'
+    '["area"!~"yes"]'
 )
 _CYCLE_UNSAFE_HIGHWAYS = {'motorway', 'motorway_link', 'trunk', 'trunk_link'}
 _DRIVE_UNSUITABLE = {'footway', 'pedestrian', 'path', 'cycleway', 'steps'}
@@ -415,23 +415,13 @@ def _sanitize_mode_edges(g, mode: str) -> None:
 
 
 def _largest_connected(g, mode: str):
-    """
-    Return the largest usable subgraph.
-    Walk: weakly-connected is sufficient — we do undirected pathfinding for pedestrians
-          so we don't need every node to be reachable in both directions.
-    Cycle/Drive: strongly-connected to guarantee bidirectional reachability.
-    """
-    if mode == 'walk':
-        try:
-            nodes = max(nx.weakly_connected_components(g), key=len)
-            return g.subgraph(nodes).copy()
-        except Exception:
-            return g
+    # Use weakly connected for all modes — we do undirected pathfinding for all modes
+    # to avoid one-way detours caused by inaccurate Indian OSM one-way tags.
     try:
-        return ox.utils_graph.get_largest_component(g, strongly=True)
-    except AttributeError:
-        nodes = max(nx.strongly_connected_components(g), key=len)
+        nodes = max(nx.weakly_connected_components(g), key=len)
         return g.subgraph(nodes).copy()
+    except Exception:
+        return g
 
 
 def _build_graph(center_lat: float, center_lon: float, dist: int, mode: str, simplify_graph: bool):
@@ -481,7 +471,7 @@ def get_graph(origin_lat: float, origin_lon: float, dest_lat: float, dest_lon: f
     center_lon = (origin_lon + dest_lon) / 2
 
     straight = _haversine_m(origin_lat, origin_lon, dest_lat, dest_lon)
-    raw_dist = straight * 1.2 + 500
+    raw_dist = straight * 1.5 + 800
     dist = int(round(min(max(raw_dist, ROUTING_GRAPH_MIN_DIST_M), ROUTING_GRAPH_MAX_DIST_M) / 500) * 500)
 
     simplify_graph = not (straight < ROUTING_SHORT_TRIP_UNSIMPLIFIED_MAX_M)
@@ -1046,6 +1036,25 @@ def make_geojson_feature(
     }
 
 
+def _nearest_node_on_graph(g_proj, x: float, y: float) -> int:
+    """Snap to the nearest edge first, then pick the closer endpoint.
+
+    nearest_nodes() snaps to intersections only — on simplified graphs the
+    nearest intersection can be hundreds of metres away in the wrong direction,
+    causing the router to backtrack before heading toward the destination.
+    Snapping via the nearest edge gives a much tighter, more intuitive start/end.
+    """
+    try:
+        ne = ox.distance.nearest_edges(g_proj, X=x, Y=y)
+        u, v = ne[0], ne[1]
+        un, vn = g_proj.nodes[u], g_proj.nodes[v]
+        d_u = (un['x'] - x) ** 2 + (un['y'] - y) ** 2
+        d_v = (vn['x'] - x) ** 2 + (vn['y'] - y) ** 2
+        return u if d_u <= d_v else v
+    except Exception:
+        return ox.distance.nearest_nodes(g_proj, X=x, Y=y)
+
+
 def get_routes(
     origin_lat: float,
     origin_lon: float,
@@ -1062,11 +1071,10 @@ def get_routes(
 
     safe_weights, adj_scores, proj_issues, kdtree = _precompute_safe_weights(g_proj, mode, issues_data)
 
-    # For walk mode use undirected pathfinding — pedestrians aren't bound by one-way
-    # tags and Indian OSM data has many directed streets that create false dead-ends.
-    # Geometry/stats extraction still uses the directed g_proj (handles missing edges
-    # gracefully by skipping them), so the route output is still valid.
-    g_path = g_proj.to_undirected() if mode == 'walk' else g_proj
+    # Use undirected pathfinding for ALL modes. One-way tags in Indian OSM data are
+    # frequently missing or wrong, causing directed routing to take large detours.
+    # Geometry/stats extraction still uses the directed g_proj so output stays valid.
+    g_path = g_proj.to_undirected()
 
     def _safe_w(u, v, d):
         return min(
@@ -1092,8 +1100,8 @@ def get_routes(
     orig_x, orig_y = orig_geom.coords[0]
     dest_x, dest_y = dest_geom.coords[0]
 
-    orig_node = ox.distance.nearest_nodes(g_proj, X=orig_x, Y=orig_y)
-    dest_node = ox.distance.nearest_nodes(g_proj, X=dest_x, Y=dest_y)
+    orig_node = _nearest_node_on_graph(g_proj, orig_x, orig_y)
+    dest_node = _nearest_node_on_graph(g_proj, dest_x, dest_y)
 
     if orig_node == dest_node:
         return {'error': 'Origin and destination resolve to the same point on the map'}
