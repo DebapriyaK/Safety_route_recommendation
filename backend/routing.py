@@ -53,7 +53,7 @@ MODE_CONFIG = {
     },
 }
 
-_PRIVATE_ACCESS = {'private', 'no', 'customers', 'delivery', 'permit'}
+_PRIVATE_ACCESS = {'private', 'no', 'customers', 'delivery', 'permit', 'military', 'restricted'}
 _BAD_SERVICE = {'driveway', 'parking_aisle'}
 
 ISSUE_PENALTIES = {
@@ -70,9 +70,84 @@ ISSUE_RADIUS = {
     'drive': 75,
 }
 
-_WALK_UNSAFE_HIGHWAYS = {'motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary'}
+_WALK_UNSAFE_HIGHWAYS = {'motorway', 'motorway_link', 'trunk', 'trunk_link'}
+
+# OSMnx's built-in 'walk' filter can exclude secondary/primary roads in areas where
+# OSM data lacks explicit pedestrian tags (common in Indian cities).  This explicit
+# filter fetches the same road types the bike graph uses, then _sanitize_mode_edges
+# strips genuinely non-pedestrian edges, giving walk routing the correct road set.
+_WALK_CUSTOM_FILTER = (
+    '["highway"~"footway|path|pedestrian|steps|corridor|living_street|residential|'
+    'tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|unclassified|service"]'
+    '["area"!~"yes"]["access"!~"private"]["foot"!~"no"]["service"!~"private"]'
+)
 _CYCLE_UNSAFE_HIGHWAYS = {'motorway', 'motorway_link', 'trunk', 'trunk_link'}
 _DRIVE_UNSUITABLE = {'footway', 'pedestrian', 'path', 'cycleway', 'steps'}
+
+# OSM tags used to identify restricted areas (military, airports, etc.)
+# These polygons are fetched once per graph and used to penalise edges inside them.
+_RESTRICTED_AREA_TAGS = {
+    'landuse': ['military'],
+    'boundary': ['military'],
+    'aeroway': ['aerodrome'],
+}
+
+
+def _fetch_restricted_geom(center_lat: float, center_lon: float, dist_m: int):
+    """Return a merged Shapely polygon of all restricted areas near the route, or None."""
+    from shapely.ops import unary_union
+    polys = []
+    try:
+        gdf = ox.features_from_point((center_lat, center_lon), tags=_RESTRICTED_AREA_TAGS, dist=dist_m)
+        for geom in gdf.geometry:
+            if hasattr(geom, 'geom_type') and geom.geom_type in ('Polygon', 'MultiPolygon'):
+                polys.append(geom)
+    except Exception as e:
+        print(f'[restricted-zones] fetch failed (non-fatal): {e}')
+    if not polys:
+        return None
+    try:
+        return unary_union(polys)
+    except Exception:
+        return None
+
+
+def _stamp_restricted_edges(g, restricted_wgs84) -> int:
+    """Mark edges whose midpoint falls inside a restricted area polygon.
+
+    Returns the count of stamped edges.  The stamp is stored as edge attribute
+    ``in_restricted_zone=True`` so it persists in the cached graph and in saved
+    graphml files — avoiding repeat Overpass calls on subsequent requests.
+    """
+    if restricted_wgs84 is None:
+        return 0
+    crs = g.graph.get('crs')
+    if crs is None:
+        return 0
+    try:
+        restricted_proj, _ = ox.projection.project_geometry(
+            restricted_wgs84, crs='EPSG:4326', to_crs=crs
+        )
+    except Exception as e:
+        print(f'[restricted-zones] projection failed (non-fatal): {e}')
+        return 0
+
+    count = 0
+    for u, v, key, data in g.edges(keys=True, data=True):
+        if data.get('in_restricted_zone'):
+            count += 1
+            continue
+        try:
+            mid = Point(
+                (g.nodes[u]['x'] + g.nodes[v]['x']) / 2,
+                (g.nodes[u]['y'] + g.nodes[v]['y']) / 2,
+            )
+            if restricted_proj.contains(mid):
+                data['in_restricted_zone'] = True
+                count += 1
+        except Exception:
+            pass
+    return count
 
 
 def _prune_cache() -> None:
@@ -189,7 +264,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dp = math.radians(lat2 - lat1)
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+    return 2 * r * math.asin(math.sqrt(min(1.0, a)))
 
 
 def _project_issues(issues_data: List[dict], crs) -> List:
@@ -217,12 +292,12 @@ def compute_safety_score(edge_data: dict, mode: str = 'walk') -> float:
             'footway': 1.0,
             'pedestrian': 1.0,
             'living_street': 0.9,
-            'residential': 0.8,
-            'tertiary': 0.7,
-            'secondary': 0.6,
-            'primary': 0.5,
-            'unclassified': 0.5,
-            'service': 0.4,
+            'residential': 0.85,
+            'tertiary': 0.78,
+            'secondary': 0.72,
+            'primary': 0.65,
+            'unclassified': 0.55,
+            'service': 0.45,
             'track': 0.3,
             'trunk': 0.2,
             'motorway': 0.1,
@@ -361,17 +436,40 @@ def _largest_connected(g, mode: str):
 
 def _build_graph(center_lat: float, center_lon: float, dist: int, mode: str, simplify_graph: bool):
     config = MODE_CONFIG[mode]
-    g = ox.graph_from_point(
-        (center_lat, center_lon),
-        dist=dist,
-        network_type=config['network_type'],
-        simplify=simplify_graph,
-    )
+    if mode == 'walk':
+        try:
+            g = ox.graph_from_point(
+                (center_lat, center_lon),
+                dist=dist,
+                custom_filter=_WALK_CUSTOM_FILTER,
+                simplify=simplify_graph,
+            )
+        except Exception:
+            g = ox.graph_from_point(
+                (center_lat, center_lon),
+                dist=dist,
+                network_type='walk',
+                simplify=simplify_graph,
+            )
+    else:
+        g = ox.graph_from_point(
+            (center_lat, center_lon),
+            dist=dist,
+            network_type=config['network_type'],
+            simplify=simplify_graph,
+        )
     g = ox.project_graph(g)
     _sanitize_mode_edges(g, mode)
     g = _largest_connected(g, mode)
     _stamp_base_scores(g, mode)
     _ensure_graph_bounds_latlon(g)
+    try:
+        restricted = _fetch_restricted_geom(center_lat, center_lon, dist)
+        n = _stamp_restricted_edges(g, restricted)
+        if n:
+            print(f'[restricted-zones] stamped {n} edges in restricted areas')
+    except Exception as e:
+        print(f'[restricted-zones] skipped ({e})')
     return g
 
 
@@ -442,6 +540,19 @@ def preload_city_graphs() -> None:
                 graph = _largest_connected(graph, mode)
                 _stamp_base_scores(graph, mode)
                 _ensure_graph_bounds_latlon(graph)
+                # Stamp restricted zones if not already present in the saved file
+                needs_stamp = not any(
+                    d.get('in_restricted_zone')
+                    for _, _, d in graph.edges(data=True)
+                )
+                if needs_stamp:
+                    try:
+                        restricted = _fetch_restricted_geom(DEFAULT_CITY_LAT, DEFAULT_CITY_LON, dist)
+                        n = _stamp_restricted_edges(graph, restricted)
+                        if n:
+                            print(f'[restricted-zones] preload stamped {n} edges')
+                    except Exception as e:
+                        print(f'[restricted-zones] preload skipped ({e})')
             else:
                 print(f'[routing-preload] building graph for {mode}, dist={dist}m ...')
                 graph = _build_graph(DEFAULT_CITY_LAT, DEFAULT_CITY_LON, dist, mode, simplify_graph)
@@ -482,8 +593,8 @@ def _mode_edge_penalty(edge_data: dict, mode: str) -> float:
             penalty += 22.0
         if bridge and bridge != 'no':
             penalty += 8.0
-        if sidewalk in ('no', 'none', 'separate'):
-            penalty += 12.0
+        if sidewalk in ('no', 'none'):
+            penalty += 10.0
         if edge_data.get('foot') in ('no', 'private'):
             penalty += 30.0
 
@@ -556,15 +667,15 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
                 n_dis = issue.get('num_dismissals', 0)
                 credibility = min(1.0, max(0.15, 0.20 * n_rep + 0.20 * n_con - 0.10 * n_dis))
                 severity_factor = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(
-                issue.get('severity', 'medium'), 1.0
-            )
-            issue_penalty += (
-                ISSUE_PENALTIES.get(cat, 10)
-                * credibility * conf
-                * _category_time_factor(cat, hour)
-                * severity_factor
-                / 100.0
-            )
+                    issue.get('severity', 'medium'), 1.0
+                )
+                issue_penalty += (
+                    ISSUE_PENALTIES.get(cat, 10)
+                    * credibility * conf
+                    * _category_time_factor(cat, hour)
+                    * severity_factor
+                    / 100.0
+                )
 
             issue_penalty = min(issue_penalty, 60.0)
 
@@ -584,7 +695,8 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
         else:
             dark_penalty = 0.0
 
-        adj_score = max(0.0, base_score - issue_penalty - mode_penalty - dark_penalty)
+        restricted_penalty = 90.0 if data.get('in_restricted_zone') else 0.0
+        adj_score = max(0.0, base_score - issue_penalty - mode_penalty - dark_penalty - restricted_penalty)
         adj_scores[(u, v, key)] = adj_score
         safe_weights[(u, v, key)] = length * (2.0 - adj_score / 100.0)
 
@@ -679,14 +791,16 @@ def _edge_speed_kmh(edge: dict, mode: str) -> float:
 
     if mode == 'walk':
         base = {
-            'footway': 4.8,
-            'pedestrian': 4.8,
-            'residential': 4.5,
-            'service': 4.3,
+            'footway': 5.0,
+            'pedestrian': 5.0,
+            'residential': 4.8,
+            'living_street': 4.8,
+            'tertiary': 4.7,
+            'secondary': 4.7,
+            'primary': 4.6,
+            'service': 4.5,
             'track': 4.0,
-            'primary': 4.0,
-            'secondary': 4.1,
-        }.get(highway, 4.4)
+        }.get(highway, 4.6)
     elif mode == 'cycle':
         base = {
             'cycleway': 18.0,
@@ -1027,7 +1141,12 @@ def get_routes(
 
     safe_steps = build_turn_steps(g_proj, safe_nodes)
     fast_steps = build_turn_steps(g_proj, fast_nodes)
-    same_route = safe_nodes == fast_nodes
+    same_route = (safe_nodes == fast_nodes) or (
+        safe_dist > 0
+        and fast_dist > 0
+        and abs(safe_dist - fast_dist) <= 0.05 * max(safe_dist, fast_dist)
+        and abs(safe_time - fast_time) <= 0.05 * max(safe_time, fast_time)
+    )
 
     return {
         'type': 'FeatureCollection',

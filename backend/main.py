@@ -78,6 +78,8 @@ async def lifespan(app: FastAPI):
         cleaned = deactivate_stale_issues(db)
         if cleaned:
             print(f"[issues] auto-deactivated {cleaned} stale issues on startup")
+    except Exception as exc:
+        print(f"[startup] DB not ready yet, skipping issue cleanup: {exc}")
     finally:
         db.close()
 
@@ -249,6 +251,13 @@ def compute_route(
     req: RouteRequest,
     db: Session = Depends(get_db),
 ):
+    for name, val in [('origin_lat', req.origin_lat), ('dest_lat', req.dest_lat)]:
+        if not (-90 <= val <= 90):
+            raise HTTPException(status_code=400, detail=f'{name} must be between -90 and 90')
+    for name, val in [('origin_lon', req.origin_lon), ('dest_lon', req.dest_lon)]:
+        if not (-180 <= val <= 180):
+            raise HTTPException(status_code=400, detail=f'{name} must be between -180 and 180')
+
     lat_min = min(req.origin_lat, req.dest_lat) - 0.05
     lat_max = max(req.origin_lat, req.dest_lat) + 0.05
     lon_min = min(req.origin_lon, req.dest_lon) - 0.05

@@ -97,6 +97,7 @@ function escHtml(str) {
 
 function updateNavbar(user) {
   const userInfo = document.getElementById('user-info');
+  const mobileBtn = document.getElementById('mobile-preview-btn');
   if (!userInfo) return;
   if (user) {
     userInfo.innerHTML = `
@@ -104,8 +105,10 @@ function updateNavbar(user) {
       <span class="nav-username">Hi, ${escHtml(user.username)}</span>
       <button class="nav-btn" onclick="logout()">Logout</button>
     `;
+    if (mobileBtn) mobileBtn.style.display = user.is_admin ? '' : 'none';
   } else {
     userInfo.innerHTML = '<a class="nav-link" href="login.html">Login</a>';
+    if (mobileBtn) mobileBtn.style.display = 'none';
   }
 }
 
@@ -536,8 +539,12 @@ async function getRoutesFromInput() {
     if (summaryEl) summaryEl.style.display = 'none';
 
     markerLayer = L.layerGroup([
-      L.marker([origin_lat, origin_lon]).bindPopup('<b>Origin</b>'),
-      L.marker([dest_lat, dest_lon]).bindPopup('<b>Destination</b>'),
+      L.circleMarker([origin_lat, origin_lon], {
+        radius: 10, color: '#fff', weight: 2.5, fillColor: '#22c55e', fillOpacity: 1,
+      }).bindPopup('<b>Start</b>'),
+      L.circleMarker([dest_lat, dest_lon], {
+        radius: 10, color: '#fff', weight: 2.5, fillColor: '#ef4444', fillOpacity: 1,
+      }).bindPopup('<b>Destination</b>'),
     ]).addTo(map);
 
     showLoading('Building street graph and computing routes...');
@@ -652,8 +659,14 @@ function drawRoutes(data) {
       }
       return {};
     },
-    pointToLayer: (_feature, latlng) => L.marker(latlng),
+    pointToLayer: (feature, latlng) => {
+      // Origin/destination already rendered by markerLayer — skip GeoJSON duplicates
+      const lbl = feature.properties?.label;
+      if (lbl === 'origin' || lbl === 'destination') return null;
+      return L.circleMarker(latlng, { radius: 6, color: '#888', fillOpacity: 0.7, weight: 1 });
+    },
     onEachFeature: (feature, layer) => {
+      if (!layer) return;
       if (feature.geometry.type === 'Point') {
         layer.bindPopup(`<b>${feature.properties.label}</b>`);
       }
@@ -1245,6 +1258,9 @@ async function submitIssue(lat, lon) {
 }
 
 async function validateIssue(issueId, response) {
+  const label = response === 'confirm' ? 'Still there (confirm)' : 'Fixed / Gone (dismiss)';
+  if (!confirm(`Mark this issue as: ${label}?`)) return;
+
   // Attach current GPS position so the backend can weight nearby validations more heavily
   let userLat = null, userLon = null;
   if (navigator.geolocation) {
@@ -1289,16 +1305,40 @@ async function validateIssue(issueId, response) {
 
 function showValidationPopup(issueId, latlng) {
   if (!currentUser) return;
-  L.popup()
-    .setLatLng(latlng)
-    .setContent(`
-      <div style="min-width:190px">
-        <b>Nearby Issue</b><br>Can you verify this issue?<br><br>
-        <button onclick="validateIssue('${issueId}','confirm')" style="margin-right:8px;padding:6px 12px;background:#27ae60;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px">Still there</button>
-        <button onclick="validateIssue('${issueId}','dismiss')" style="padding:6px 12px;background:#e74c3c;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px">Fixed / gone</button>
-      </div>
-    `)
-    .openOn(map);
+
+  const wrap = document.createElement('div');
+  wrap.style.minWidth = '190px';
+
+  const title = document.createElement('b');
+  title.textContent = 'Nearby Issue';
+  const br1 = document.createElement('br');
+  const text = document.createElement('span');
+  text.textContent = 'Can you verify this issue?';
+  const br2 = document.createElement('br');
+  const br3 = document.createElement('br');
+
+  const btnConfirm = document.createElement('button');
+  btnConfirm.textContent = 'Still there';
+  Object.assign(btnConfirm.style, {
+    marginRight: '8px', padding: '6px 12px',
+    background: '#27ae60', color: '#fff',
+    border: 'none', borderRadius: '5px',
+    cursor: 'pointer', fontSize: '13px',
+  });
+  btnConfirm.addEventListener('click', () => validateIssue(issueId, 'confirm'));
+
+  const btnDismiss = document.createElement('button');
+  btnDismiss.textContent = 'Fixed / gone';
+  Object.assign(btnDismiss.style, {
+    padding: '6px 12px',
+    background: '#e74c3c', color: '#fff',
+    border: 'none', borderRadius: '5px',
+    cursor: 'pointer', fontSize: '13px',
+  });
+  btnDismiss.addEventListener('click', () => validateIssue(issueId, 'dismiss'));
+
+  wrap.append(title, br1, text, br2, br3, btnConfirm, btnDismiss);
+  L.popup().setLatLng(latlng).setContent(wrap).openOn(map);
 }
 
 function useMyLocation() {

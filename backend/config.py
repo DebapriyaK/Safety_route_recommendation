@@ -32,7 +32,7 @@ SECRET_KEY: str = os.getenv('SECRET_KEY', 'change-me-in-production-use-long-rand
 ALGORITHM: str = os.getenv('ALGORITHM', 'HS256')
 ACCESS_TOKEN_EXPIRE_HOURS: int = _get_int('ACCESS_TOKEN_EXPIRE_HOURS', 24)
 
-GEOAPIFY_KEY: str = os.getenv('GEOAPIFY_KEY', 'b3c3cb8ed67b46a0a4f5e347f9b8c1f5')
+GEOAPIFY_KEY: str = os.getenv('GEOAPIFY_KEY', '')  # set via environment variable — never hardcode
 OLA_MAPS_KEY: str = os.getenv('OLA_MAPS_KEY', '')
 DEFAULT_CITY_LAT: float = _get_float('DEFAULT_CITY_LAT', 12.9716)
 DEFAULT_CITY_LON: float = _get_float('DEFAULT_CITY_LON', 77.5946)
@@ -46,8 +46,8 @@ ALLOW_ALL_CORS: bool = os.getenv('ALLOW_ALL_CORS', '0') == '1'
 
 # Rate limiting controls
 ROUTE_RATE_LIMIT: str = os.getenv('ROUTE_RATE_LIMIT', '20/minute')
-AUTH_LOGIN_MAX_PER_MINUTE: int = _get_int('AUTH_LOGIN_MAX_PER_MINUTE', 20)
-AUTH_REGISTER_MAX_PER_MINUTE: int = _get_int('AUTH_REGISTER_MAX_PER_MINUTE', 10)
+AUTH_LOGIN_MAX_PER_MINUTE: int = _get_int('AUTH_LOGIN_MAX_PER_MINUTE', 5)
+AUTH_REGISTER_MAX_PER_MINUTE: int = _get_int('AUTH_REGISTER_MAX_PER_MINUTE', 3)
 
 # Background cleanup controls
 ISSUE_CLEANUP_INTERVAL_MINUTES: int = _get_int('ISSUE_CLEANUP_INTERVAL_MINUTES', 30)
@@ -64,6 +64,9 @@ ROUTING_PRELOAD_ENABLED: bool = os.getenv('ROUTING_PRELOAD_ENABLED', '1') == '1'
 ROUTING_PRELOAD_BLOCKING: bool = os.getenv('ROUTING_PRELOAD_BLOCKING', '0') == '1'
 ROUTING_PRELOAD_DIST_M: int = _get_int('ROUTING_PRELOAD_DIST_M', 10000)
 ROUTING_PRELOAD_MODES: List[str] = _get_csv('ROUTING_PRELOAD_MODES', 'walk,cycle,drive')
+
+
+ADMIN_USERNAMES: List[str] = _get_csv('ADMIN_USERNAMES', '')
 
 
 def validate_runtime_config() -> List[str]:

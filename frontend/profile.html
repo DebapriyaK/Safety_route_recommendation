@@ -89,17 +89,25 @@
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || 'Failed to load profile');
 
-        document.getElementById('user-meta').innerHTML = `
-          <b>${data.user.username}</b><br>
-          <small>${data.user.email}</small>
-        `;
+        const metaEl = document.getElementById('user-meta');
+        metaEl.innerHTML = '';
+        const b = document.createElement('b');
+        b.textContent = data.user.username;
+        const br = document.createElement('br');
+        const sm = document.createElement('small');
+        sm.textContent = data.user.email;
+        metaEl.append(b, br, sm);
 
+        const repScore = typeof data.user.reputation_score === 'number'
+          ? data.user.reputation_score.toFixed(2)
+          : '—';
         document.getElementById('reported-grid').innerHTML = [
           m('Total reported', data.reported.total),
           m('Active reports', data.reported.currently_active),
           m('Leaning confirmed', data.reported.leaning_confirmed),
           m('Leaning dismissed', data.reported.leaning_dismissed),
           m('Accuracy rate', `${data.reported.accuracy_rate}%`),
+          m('Reputation score', `${repScore} <span style="font-size:11px;color:#6b7280;font-weight:400;">/1.5</span>`),
         ].join('');
 
         document.getElementById('validation-grid').innerHTML = [

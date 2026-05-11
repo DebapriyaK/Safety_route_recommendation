@@ -18,30 +18,15 @@
 
     .card {
       background: #ffffff;
-      width: min(400px, 92vw);
+      width: min(420px, 94vw);
       border-radius: 16px;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
       padding: 32px 24px 28px;
     }
 
-    .logo {
-      text-align: center;
-      margin-bottom: 6px;
-    }
-
-    .logo-text {
-      font-size: 28px;
-      font-weight: 700;
-      color: #1a1a2e;
-      letter-spacing: -0.5px;
-    }
-
-    .tagline {
-      text-align: center;
-      font-size: 13px;
-      color: #6b7280;
-      margin-bottom: 28px;
-    }
+    .logo { text-align: center; margin-bottom: 6px; }
+    .logo-text { font-size: 28px; font-weight: 700; color: #1a1a2e; letter-spacing: -0.5px; }
+    .tagline { text-align: center; font-size: 13px; color: #6b7280; margin-bottom: 28px; }
 
     /* Tabs */
     .tabs {
@@ -51,103 +36,114 @@
       border: 1px solid #e5e7eb;
       margin-bottom: 24px;
     }
-
     .tab-btn {
-      flex: 1;
-      padding: 10px;
-      border: none;
-      background: #f9fafb;
-      color: #6b7280;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.2s, color 0.2s;
+      flex: 1; padding: 10px; border: none;
+      background: #f9fafb; color: #6b7280;
+      font-size: 14px; font-weight: 500;
+      cursor: pointer; transition: background 0.2s, color 0.2s;
     }
-
-    .tab-btn.active {
-      background: #1a1a2e;
-      color: #ffffff;
-    }
+    .tab-btn.active { background: #1a1a2e; color: #ffffff; }
 
     /* Forms */
     .form-panel { display: none; }
     .form-panel.active { display: block; }
 
-    .input-group {
-      position: relative;
-      margin-bottom: 16px;
-    }
-
+    /* Input group */
+    .input-group { position: relative; margin-bottom: 4px; }
     .input-icon {
-      position: absolute;
-      left: 12px;
-      top: 50%;
+      position: absolute; left: 12px; top: 50%;
       transform: translateY(-50%);
-      font-size: 16px;
-      pointer-events: none;
-      line-height: 1;
+      font-size: 16px; pointer-events: none; line-height: 1;
     }
-
     .input-group input {
       width: 100%;
-      padding: 11px 14px 11px 40px;
+      padding: 11px 40px 11px 40px;
       border: 1px solid #d1d5db;
       border-radius: 8px;
-      font-size: 14px;
-      color: #111827;
+      font-size: 14px; color: #111827;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-
     .input-group input:focus {
       border-color: #1a1a2e;
       box-shadow: 0 0 0 3px rgba(26, 26, 46, 0.12);
     }
-
+    .input-group input.invalid { border-color: #dc2626; }
+    .input-group input.valid   { border-color: #16a34a; }
     .input-group input::placeholder { color: #9ca3af; }
 
-    /* Error */
+    /* Show/hide password toggle */
+    .toggle-pw {
+      position: absolute; right: 12px; top: 50%;
+      transform: translateY(-50%);
+      background: none; border: none;
+      cursor: pointer; font-size: 16px;
+      color: #6b7280; padding: 0; line-height: 1;
+    }
+    .toggle-pw:hover { color: #1a1a2e; }
+
+    /* Per-field hint */
+    .field-hint {
+      font-size: 11px; color: #dc2626;
+      margin-bottom: 10px; padding-left: 4px;
+      min-height: 16px;
+    }
+    .field-hint.ok { color: #16a34a; }
+
+    /* Password strength bar */
+    .strength-wrap { margin-bottom: 10px; }
+    .strength-bar {
+      height: 4px; border-radius: 2px;
+      background: #e5e7eb;
+      overflow: hidden;
+    }
+    .strength-fill {
+      height: 100%; width: 0%;
+      border-radius: 2px;
+      transition: width 0.3s, background 0.3s;
+    }
+    .strength-label { font-size: 11px; color: #6b7280; margin-top: 3px; }
+
+    /* Shared error banner */
     .error-msg {
       display: none;
-      background: #fef2f2;
-      color: #dc2626;
+      background: #fef2f2; color: #dc2626;
       border: 1px solid #fca5a5;
       border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 13px;
+      padding: 10px 14px; font-size: 13px;
       margin-bottom: 16px;
     }
-
     .error-msg.visible { display: block; }
 
     /* Submit button */
     .btn-primary {
-      width: 100%;
-      padding: 12px;
-      background: #1a1a2e;
-      color: #ffffff;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
+      width: 100%; padding: 12px;
+      background: #1a1a2e; color: #ffffff;
+      border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 600;
       cursor: pointer;
       transition: background 0.2s, transform 0.1s;
+      margin-top: 8px;
     }
-
     .btn-primary:hover { background: #16213e; }
     .btn-primary:active { transform: scale(0.98); }
     .btn-primary:disabled { background: #9ca3af; cursor: not-allowed; }
 
-    /* Guest link */
-    .guest-link {
-      display: block;
-      text-align: center;
-      margin-top: 20px;
-      font-size: 13px;
-      color: #6b7280;
-      text-decoration: none;
+    /* Requirements checklist */
+    .pw-rules { margin: 0 0 10px 0; padding: 0; list-style: none; }
+    .pw-rules li {
+      font-size: 11px; color: #6b7280;
+      padding: 1px 0; display: flex; align-items: center; gap: 5px;
     }
+    .pw-rules li.met { color: #16a34a; }
+    .pw-rules li::before { content: '○'; font-size: 10px; }
+    .pw-rules li.met::before { content: '●'; color: #16a34a; }
 
+    .guest-link {
+      display: block; text-align: center;
+      margin-top: 20px; font-size: 13px;
+      color: #6b7280; text-decoration: none;
+    }
     .guest-link:hover { color: #1a1a2e; text-decoration: underline; }
   </style>
 </head>
@@ -159,40 +155,82 @@
     <p class="tagline">Smarter routes. Safer journeys.</p>
 
     <div class="tabs">
-      <button class="tab-btn active" id="tab-login" onclick="showTab('login')">Login</button>
-      <button class="tab-btn" id="tab-register" onclick="showTab('register')">Register</button>
+      <button class="tab-btn active" id="tab-login"    onclick="showTab('login')">Login</button>
+      <button class="tab-btn"        id="tab-register" onclick="showTab('register')">Register</button>
     </div>
 
-    <!-- Error message (shared) -->
     <div class="error-msg" id="error-msg"></div>
 
-    <!-- Login form -->
+    <!-- ── LOGIN FORM ── -->
     <div class="form-panel active" id="panel-login">
       <div class="input-group">
         <span class="input-icon">👤</span>
-        <input type="text" id="login-username" placeholder="Username" autocomplete="username" />
+        <input type="text" id="login-username" placeholder="Username"
+               autocomplete="username" oninput="clearFieldHint('login-username-hint')" />
       </div>
+      <div class="field-hint" id="login-username-hint"></div>
+
       <div class="input-group">
         <span class="input-icon">🔒</span>
-        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+        <input type="password" id="login-password" placeholder="Password"
+               autocomplete="current-password" oninput="clearFieldHint('login-password-hint')" />
+        <button type="button" class="toggle-pw" onclick="togglePw('login-password', this)" aria-label="Show password">👁</button>
       </div>
+      <div class="field-hint" id="login-password-hint"></div>
+
       <button class="btn-primary" id="btn-login" onclick="doLogin()">Login</button>
     </div>
 
-    <!-- Register form -->
+    <!-- ── REGISTER FORM ── -->
     <div class="form-panel" id="panel-register">
       <div class="input-group">
         <span class="input-icon">👤</span>
-        <input type="text" id="reg-username" placeholder="Username (min 3 chars)" autocomplete="username" />
+        <input type="text" id="reg-username" placeholder="Username (3–20 chars, letters/numbers/_)"
+               autocomplete="username" maxlength="20"
+               oninput="validateUsername(this)" />
       </div>
+      <div class="field-hint" id="reg-username-hint"></div>
+
       <div class="input-group">
         <span class="input-icon">✉️</span>
-        <input type="email" id="reg-email" placeholder="Email address" autocomplete="email" />
+        <input type="email" id="reg-email" placeholder="Email address"
+               autocomplete="email"
+               oninput="validateEmail(this)" />
       </div>
+      <div class="field-hint" id="reg-email-hint"></div>
+
       <div class="input-group">
         <span class="input-icon">🔒</span>
-        <input type="password" id="reg-password" placeholder="Password (min 6 chars)" autocomplete="new-password" />
+        <input type="password" id="reg-password" placeholder="Password"
+               autocomplete="new-password"
+               oninput="onPasswordInput()" />
+        <button type="button" class="toggle-pw" onclick="togglePw('reg-password', this)" aria-label="Show password">👁</button>
       </div>
+
+      <!-- Strength bar -->
+      <div class="strength-wrap">
+        <div class="strength-bar"><div class="strength-fill" id="strength-fill"></div></div>
+        <div class="strength-label" id="strength-label"></div>
+      </div>
+
+      <!-- Requirements checklist -->
+      <ul class="pw-rules" id="pw-rules">
+        <li id="rule-len">At least 8 characters</li>
+        <li id="rule-upper">One uppercase letter (A–Z)</li>
+        <li id="rule-lower">One lowercase letter (a–z)</li>
+        <li id="rule-digit">One number (0–9)</li>
+        <li id="rule-special">One special character (!@#$%^&* …)</li>
+      </ul>
+
+      <div class="input-group">
+        <span class="input-icon">🔒</span>
+        <input type="password" id="reg-confirm" placeholder="Confirm password"
+               autocomplete="new-password"
+               oninput="validateConfirm()" />
+        <button type="button" class="toggle-pw" onclick="togglePw('reg-confirm', this)" aria-label="Show password">👁</button>
+      </div>
+      <div class="field-hint" id="reg-confirm-hint"></div>
+
       <button class="btn-primary" id="btn-register" onclick="doRegister()">Create Account</button>
     </div>
 
@@ -201,14 +239,16 @@
 
   <script src="auth.js?v=5"></script>
   <script>
-    // ---------------------------------------------------------------------------
-    // Tab switching
-    // ---------------------------------------------------------------------------
+    const USERNAME_RE = /^[a-zA-Z0-9_]+$/;
+    const SPECIAL_RE  = /[!@#$%^&*()\-_=+\[\]{};':"\\|,.<>\/?`~]/;
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
     function showTab(tab) {
-      document.getElementById('panel-login').classList.toggle('active', tab === 'login');
-      document.getElementById('panel-register').classList.toggle('active', tab === 'register');
-      document.getElementById('tab-login').classList.toggle('active', tab === 'login');
-      document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+      ['login','register'].forEach(t => {
+        document.getElementById(`panel-${t}`).classList.toggle('active', t === tab);
+        document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+      });
       hideError();
     }
 
@@ -222,22 +262,147 @@
       document.getElementById('error-msg').classList.remove('visible');
     }
 
+    function setFieldHint(id, msg, ok = false) {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.className = 'field-hint' + (ok ? ' ok' : '');
+    }
+
+    function clearFieldHint(id) {
+      const el = document.getElementById(id);
+      el.textContent = '';
+      el.className = 'field-hint';
+    }
+
     function setLoading(btnId, loading) {
       const btn = document.getElementById(btnId);
       btn.disabled = loading;
       btn.textContent = loading ? 'Please wait…' : (btnId === 'btn-login' ? 'Login' : 'Create Account');
     }
 
-    // ---------------------------------------------------------------------------
-    // Login
-    // ---------------------------------------------------------------------------
+    function togglePw(inputId, btn) {
+      const inp = document.getElementById(inputId);
+      const hidden = inp.type === 'password';
+      inp.type = hidden ? 'text' : 'password';
+      btn.textContent = hidden ? '🙈' : '👁';
+    }
+
+    function markField(inputId, valid) {
+      const inp = document.getElementById(inputId);
+      inp.classList.toggle('valid',   valid);
+      inp.classList.toggle('invalid', !valid);
+    }
+
+    // ── Registration field validators ────────────────────────────────────────
+
+    function validateUsername(inp) {
+      const v = inp.value.trim();
+      if (!v) { markField('reg-username', false); clearFieldHint('reg-username-hint'); return false; }
+      if (v.length < 3 || v.length > 20) {
+        markField('reg-username', false);
+        setFieldHint('reg-username-hint', 'Must be 3–20 characters.');
+        return false;
+      }
+      if (!USERNAME_RE.test(v)) {
+        markField('reg-username', false);
+        setFieldHint('reg-username-hint', 'Only letters, numbers, and underscores allowed.');
+        return false;
+      }
+      markField('reg-username', true);
+      setFieldHint('reg-username-hint', 'Looks good!', true);
+      return true;
+    }
+
+    function validateEmail(inp) {
+      const v = inp.value.trim();
+      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+      if (!v) { markField('reg-email', false); clearFieldHint('reg-email-hint'); return false; }
+      if (!emailRe.test(v)) {
+        markField('reg-email', false);
+        setFieldHint('reg-email-hint', 'Enter a valid email address.');
+        return false;
+      }
+      markField('reg-email', true);
+      setFieldHint('reg-email-hint', 'Looks good!', true);
+      return true;
+    }
+
+    function checkPasswordRules(pw) {
+      return {
+        len:     pw.length >= 8,
+        upper:   /[A-Z]/.test(pw),
+        lower:   /[a-z]/.test(pw),
+        digit:   /[0-9]/.test(pw),
+        special: SPECIAL_RE.test(pw),
+      };
+    }
+
+    function onPasswordInput() {
+      const pw = document.getElementById('reg-password').value;
+      const rules = checkPasswordRules(pw);
+      const met = Object.values(rules).filter(Boolean).length;
+
+      // Update rule checklist
+      document.getElementById('rule-len').classList.toggle('met',     rules.len);
+      document.getElementById('rule-upper').classList.toggle('met',   rules.upper);
+      document.getElementById('rule-lower').classList.toggle('met',   rules.lower);
+      document.getElementById('rule-digit').classList.toggle('met',   rules.digit);
+      document.getElementById('rule-special').classList.toggle('met', rules.special);
+
+      // Strength bar
+      const fill = document.getElementById('strength-fill');
+      const label = document.getElementById('strength-label');
+      const pct = (met / 5) * 100;
+      const configs = [
+        { color: '#dc2626', text: '' },
+        { color: '#dc2626', text: 'Very weak' },
+        { color: '#f97316', text: 'Weak' },
+        { color: '#eab308', text: 'Fair' },
+        { color: '#22c55e', text: 'Good' },
+        { color: '#16a34a', text: 'Strong' },
+      ];
+      const cfg = configs[met];
+      fill.style.width      = `${pct}%`;
+      fill.style.background = cfg.color;
+      label.textContent     = cfg.text;
+      label.style.color     = cfg.color;
+
+      markField('reg-password', met === 5);
+
+      // Re-validate confirm if already typed
+      if (document.getElementById('reg-confirm').value) validateConfirm();
+      return met === 5;
+    }
+
+    function validateConfirm() {
+      const pw  = document.getElementById('reg-password').value;
+      const cfm = document.getElementById('reg-confirm').value;
+      if (!cfm) { markField('reg-confirm', false); clearFieldHint('reg-confirm-hint'); return false; }
+      if (pw !== cfm) {
+        markField('reg-confirm', false);
+        setFieldHint('reg-confirm-hint', 'Passwords do not match.');
+        return false;
+      }
+      markField('reg-confirm', true);
+      setFieldHint('reg-confirm-hint', 'Passwords match!', true);
+      return true;
+    }
+
+    // ── Login ────────────────────────────────────────────────────────────────
+
     async function doLogin() {
       hideError();
       const username = document.getElementById('login-username').value.trim();
       const password = document.getElementById('login-password').value;
 
-      if (!username || !password) {
-        showError('Please enter your username and password.');
+      if (!username) {
+        setFieldHint('login-username-hint', 'Username is required.');
+        markField('login-username', false);
+        return;
+      }
+      if (!password) {
+        setFieldHint('login-password-hint', 'Password is required.');
+        markField('login-password', false);
         return;
       }
 
@@ -248,14 +413,16 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password }),
         });
-
         const data = await resp.json();
-
         if (!resp.ok) {
-          showError(data.detail || 'Login failed. Please try again.');
+          if (resp.status === 429) {
+            const retryAfter = resp.headers.get('Retry-After') || '60';
+            showError(`Too many login attempts. Please wait ${retryAfter} seconds and try again.`);
+          } else {
+            showError(data.detail || 'Login failed. Please try again.');
+          }
           return;
         }
-
         setToken(data.access_token);
         setUser(data.user);
         window.location.href = 'index.html';
@@ -266,25 +433,23 @@
       }
     }
 
-    // ---------------------------------------------------------------------------
-    // Register
-    // ---------------------------------------------------------------------------
+    // ── Register ─────────────────────────────────────────────────────────────
+
     async function doRegister() {
       hideError();
       const username = document.getElementById('reg-username').value.trim();
       const email    = document.getElementById('reg-email').value.trim();
       const password = document.getElementById('reg-password').value;
+      const confirm  = document.getElementById('reg-confirm').value;
 
-      if (!username || !email || !password) {
-        showError('All fields are required.');
-        return;
-      }
-      if (username.length < 3) {
-        showError('Username must be at least 3 characters.');
-        return;
-      }
-      if (password.length < 6) {
-        showError('Password must be at least 6 characters.');
+      // Run all validators and collect failures
+      const uOk  = validateUsername(document.getElementById('reg-username'));
+      const emOk = validateEmail(document.getElementById('reg-email'));
+      const pwOk = onPasswordInput();
+      const cfOk = validateConfirm();
+
+      if (!uOk || !emOk || !pwOk || !cfOk) {
+        showError('Please fix the errors above before submitting.');
         return;
       }
 
@@ -295,14 +460,16 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, email, password }),
         });
-
         const data = await resp.json();
-
         if (!resp.ok) {
-          showError(data.detail || 'Registration failed. Please try again.');
+          if (resp.status === 429) {
+            const retryAfter = resp.headers.get('Retry-After') || '60';
+            showError(`Too many registration attempts. Please wait ${retryAfter} seconds.`);
+          } else {
+            showError(data.detail || 'Registration failed. Please try again.');
+          }
           return;
         }
-
         setToken(data.access_token);
         setUser(data.user);
         window.location.href = 'index.html';
@@ -313,28 +480,22 @@
       }
     }
 
-    // ---------------------------------------------------------------------------
-    // On load: redirect if already authenticated
-    // ---------------------------------------------------------------------------
+    // ── On load ──────────────────────────────────────────────────────────────
+
     (async () => {
       const user = await verifyToken();
-      if (user) {
-        window.location.href = 'index.html';
-      }
+      if (user) window.location.href = 'index.html';
 
       if ('serviceWorker' in navigator) {
         try { await navigator.serviceWorker.register('/sw.js?v=5'); } catch {}
       }
     })();
 
-    // Allow Enter key to submit
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
-      const loginActive = document.getElementById('panel-login').classList.contains('active');
-      if (loginActive) doLogin();
+      if (document.getElementById('panel-login').classList.contains('active')) doLogin();
       else doRegister();
     });
   </script>
 </body>
 </html>
-

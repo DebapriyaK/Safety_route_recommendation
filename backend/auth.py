@@ -1,3 +1,5 @@
+import re
+import socket
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import (
     ACCESS_TOKEN_EXPIRE_HOURS,
+    ADMIN_USERNAMES,
     ALGORITHM,
     AUTH_LOGIN_MAX_PER_MINUTE,
     AUTH_REGISTER_MAX_PER_MINUTE,
@@ -51,13 +54,43 @@ class TokenResponse(BaseModel):
     user: dict
 
 
+_USERNAME_RE = re.compile(r'^[a-zA-Z0-9_]+$')
+_SPECIAL_CHARS = set('!@#$%^&*()_+-=[]{};\':"|,.<>/?`~')
+
+
+def _is_admin(username: str) -> bool:
+    return bool(ADMIN_USERNAMES) and username in ADMIN_USERNAMES
+
+
 def _client_ip(request: Request) -> str:
     xff = request.headers.get('x-forwarded-for')
     if xff:
-        return xff.split(',')[0].strip()
+        candidate = xff.split(',')[0].strip()
+        try:
+            socket.inet_aton(candidate)  # validates IPv4 format; rejects spoofed garbage
+            return candidate
+        except OSError:
+            pass
     if request.client and request.client.host:
         return request.client.host
     return 'unknown'
+
+
+def _validate_password(pw: str) -> Optional[str]:
+    """Return an error string if the password fails policy, else None."""
+    if len(pw) < 8:
+        return 'Password must be at least 8 characters.'
+    if len(pw) > 72:
+        return 'Password must be at most 72 characters.'
+    if not any(c.isupper() for c in pw):
+        return 'Password must contain at least one uppercase letter.'
+    if not any(c.islower() for c in pw):
+        return 'Password must contain at least one lowercase letter.'
+    if not any(c.isdigit() for c in pw):
+        return 'Password must contain at least one number.'
+    if not any(c in _SPECIAL_CHARS for c in pw):
+        return 'Password must contain at least one special character (!@#$%^&* etc.).'
+    return None
 
 
 def _enforce_rate_limit(request: Request, action: str) -> None:
@@ -144,10 +177,15 @@ def get_optional_user(
 def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     _enforce_rate_limit(request, 'register')
 
-    if len(body.username) < 3:
-        raise HTTPException(status_code=400, detail='Username must be at least 3 characters')
-    if len(body.password) < 6:
-        raise HTTPException(status_code=400, detail='Password must be at least 6 characters')
+    username = body.username.strip()
+    if not (3 <= len(username) <= 20):
+        raise HTTPException(status_code=400, detail='Username must be between 3 and 20 characters.')
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(status_code=400, detail='Username can only contain letters, numbers, and underscores.')
+
+    pw_error = _validate_password(body.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
 
     if db.query(User).filter(User.username == body.username).first():
         raise HTTPException(status_code=409, detail='Username already taken')
@@ -172,6 +210,7 @@ def register(body: RegisterRequest, request: Request, db: Session = Depends(get_
             'email': user.email,
             'preferred_mode': user.preferred_mode,
             'reputation_score': user.reputation_score,
+            'is_admin': _is_admin(user.username),
         },
     )
 
@@ -195,6 +234,7 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
             'email': user.email,
             'preferred_mode': user.preferred_mode,
             'reputation_score': user.reputation_score,
+            'is_admin': _is_admin(user.username),
         },
     )
 
@@ -209,6 +249,7 @@ def me(current_user: User = Depends(get_current_user)):
         'is_active': current_user.is_active,
         'preferred_mode': current_user.preferred_mode,
         'reputation_score': current_user.reputation_score,
+        'is_admin': _is_admin(current_user.username),
     }
 
 
@@ -249,6 +290,7 @@ def profile_stats(
             'id': current_user.id,
             'username': current_user.username,
             'email': current_user.email,
+            'reputation_score': current_user.reputation_score,
         },
         'reported': {
             'total': total_reported,

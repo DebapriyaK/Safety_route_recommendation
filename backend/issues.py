@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_user
@@ -33,7 +33,7 @@ class IssueCreate(BaseModel):
     lat: float
     lon: float
     category: str
-    description: Optional[str] = ""
+    description: Optional[str] = Field(default="", max_length=500)
     severity: Optional[str] = "medium"
 
     @field_validator("lat")
@@ -119,6 +119,7 @@ def _update_reporter_reputation(db: Session, reporter_id: int) -> None:
     reporter = db.query(User).filter(User.id == reporter_id).first()
     if reporter:
         reporter.reputation_score = round(0.5 + accuracy, 3)
+        db.commit()
 
 
 def _proximity_weight(user_lat: Optional[float], user_lon: Optional[float],
@@ -382,8 +383,12 @@ def list_issues(
     lon_min: Optional[float] = None,
     lon_max: Optional[float] = None,
     category: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     q = db.query(Issue).filter(Issue.is_active == True)
     if lat_min is not None:
         q = q.filter(Issue.lat >= lat_min)
@@ -395,7 +400,7 @@ def list_issues(
         q = q.filter(Issue.lon <= lon_max)
     if category and category in VALID_CATEGORIES:
         q = q.filter(Issue.category == category)
-    return [_issue_to_dict(i) for i in q.order_by(Issue.reported_at.desc()).all()]
+    return [_issue_to_dict(i) for i in q.order_by(Issue.reported_at.desc()).offset(offset).limit(limit).all()]
 
 
 @router.get("/{issue_id}")
