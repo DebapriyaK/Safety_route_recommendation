@@ -1,9 +1,7 @@
-"""email_utils.py — verification email sending via Gmail SMTP."""
+"""email_utils.py — verification email sending via Resend API."""
 
 import secrets
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import requests
 
 
 def generate_verification_token() -> str:
@@ -15,15 +13,9 @@ def send_verification_email(
     username: str,
     token: str,
     app_url: str,
-    from_email: str,
-    email_password: str,
+    api_key: str,
 ) -> bool:
     verify_url = f"{app_url.rstrip('/')}/auth/verify?token={token}"
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Verify your RouteX account"
-    msg["From"] = f"RouteX <{from_email}>"
-    msg["To"] = to_email
 
     text_body = (
         f"Hi {username},\n\n"
@@ -61,15 +53,26 @@ def send_verification_email(
 </div>
 </body></html>"""
 
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
-            server.login(from_email, email_password)
-            server.sendmail(from_email, to_email, msg.as_string())
-        return True
+        resp = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': 'RouteX <onboarding@resend.dev>',
+                'to': [to_email],
+                'subject': 'Verify your RouteX account',
+                'html': html_body,
+                'text': text_body,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200 or resp.status_code == 201:
+            return True
+        print(f"[email] Resend returned {resp.status_code}: {resp.text}")
+        return False
     except Exception as exc:
         print(f"[email] Failed to send to {to_email}: {exc}")
         return False

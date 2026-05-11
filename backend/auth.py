@@ -22,9 +22,8 @@ from backend.config import (
     APP_URL,
     AUTH_LOGIN_MAX_PER_MINUTE,
     AUTH_REGISTER_MAX_PER_MINUTE,
+    EMAIL_API_KEY,
     EMAIL_ENABLED,
-    EMAIL_FROM,
-    EMAIL_PASSWORD,
     SECRET_KEY,
 )
 from backend.email_utils import generate_verification_token, send_verification_email
@@ -218,8 +217,7 @@ def register(body: RegisterRequest, request: Request, db: Session = Depends(get_
             username=body.username,
             token=token,
             app_url=APP_URL,
-            from_email=EMAIL_FROM,
-            email_password=EMAIL_PASSWORD,
+            api_key=EMAIL_API_KEY,
         )
         if not ok:
             db.delete(user)
