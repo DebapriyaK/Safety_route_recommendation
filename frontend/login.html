@@ -146,6 +146,33 @@
     }
     .guest-link:hover { color: #1a1a2e; text-decoration: underline; }
 
+    .success-msg {
+      display: none;
+      background: #f0fdf4; color: #15803d;
+      border: 1px solid #86efac;
+      border-radius: 8px;
+      padding: 10px 14px; font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .success-msg.visible { display: block; }
+
+    .info-msg {
+      display: none;
+      background: #eff6ff; color: #1d4ed8;
+      border: 1px solid #93c5fd;
+      border-radius: 8px;
+      padding: 10px 14px; font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .info-msg.visible { display: block; }
+
+    #panel-check-email { display: none; text-align: center; padding: 8px 0; }
+    #panel-check-email.active { display: block; }
+    .check-email-icon { font-size: 52px; margin-bottom: 14px; }
+    .check-email-title { font-size: 18px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px; }
+    .check-email-sub { font-size: 13px; color: #6b7280; line-height: 1.7; }
+    .check-email-addr { font-weight: 600; color: #1a1a2e; }
+
   </style>
 </head>
 <body>
@@ -166,7 +193,9 @@
       <button class="tab-btn"        id="tab-register" onclick="showTab('register')">Register</button>
     </div>
 
-    <div class="error-msg" id="error-msg"></div>
+    <div class="success-msg" id="success-msg"></div>
+    <div class="info-msg"    id="info-msg"></div>
+    <div class="error-msg"   id="error-msg"></div>
 
     <!-- ── LOGIN FORM ── -->
     <div class="form-panel active" id="panel-login">
@@ -241,6 +270,19 @@
       <button class="btn-primary" id="btn-register" onclick="doRegister()">Create Account</button>
     </div>
 
+    <!-- ── CHECK EMAIL PANEL ── -->
+    <div class="form-panel" id="panel-check-email">
+      <div class="check-email-icon">📧</div>
+      <div class="check-email-title">Check your inbox</div>
+      <p class="check-email-sub">
+        We've sent a verification link to<br>
+        <span class="check-email-addr" id="check-email-addr"></span><br><br>
+        Click the link in the email to activate your account.<br>
+        Check your spam folder if you don't see it.
+      </p>
+      <button class="btn-primary" style="margin-top:24px" onclick="showTab('login')">Back to Login</button>
+    </div>
+
     <a class="guest-link" href="index.html">Continue as guest →</a>
   </div>
 
@@ -252,11 +294,13 @@
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     function showTab(tab) {
-      ['login','register'].forEach(t => {
-        document.getElementById(`panel-${t}`).classList.toggle('active', t === tab);
-        document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+      ['login','register','check-email'].forEach(t => {
+        const panel = document.getElementById(`panel-${t}`);
+        const btn   = document.getElementById(`tab-${t}`);
+        if (panel) panel.classList.toggle('active', t === tab);
+        if (btn)   btn.classList.toggle('active', t === tab);
       });
-      hideError();
+      hideError(); hideSuccess(); hideInfo();
     }
 
     function showError(msg) {
@@ -264,6 +308,18 @@
       el.textContent = msg; el.classList.add('visible');
     }
     function hideError() { document.getElementById('error-msg').classList.remove('visible'); }
+
+    function showSuccess(msg) {
+      const el = document.getElementById('success-msg');
+      el.textContent = msg; el.classList.add('visible');
+    }
+    function hideSuccess() { document.getElementById('success-msg').classList.remove('visible'); }
+
+    function showInfo(msg) {
+      const el = document.getElementById('info-msg');
+      el.textContent = msg; el.classList.add('visible');
+    }
+    function hideInfo() { document.getElementById('info-msg').classList.remove('visible'); }
 
     function setFieldHint(id, msg, ok = false) {
       const el = document.getElementById(id);
@@ -473,9 +529,15 @@
           }
           return;
         }
-        setToken(data.access_token);
-        setUser(data.user);
-        window.location.href = 'index.html';
+        if (data.message && !data.access_token) {
+          // Email verification required — show check-email panel
+          document.getElementById('check-email-addr').textContent = data.email || '';
+          showTab('check-email');
+        } else {
+          setToken(data.access_token);
+          setUser(data.user);
+          window.location.href = 'index.html';
+        }
       } catch {
         showError('Network error. Please check your connection.');
       } finally {
@@ -488,6 +550,16 @@
     (async () => {
       const user = await verifyToken();
       if (user) window.location.href = 'index.html';
+
+      const qs = new URLSearchParams(window.location.search);
+      if (qs.get('verified') === '1') {
+        showSuccess('Email verified! You can now log in.');
+      } else if (qs.get('email_info') === 'already_verified') {
+        showInfo('Your email is already verified. Please log in.');
+      } else if (qs.get('email_error')) {
+        showError('Verification link is invalid or has expired. Please register again.');
+      }
+      history.replaceState({}, '', window.location.pathname);
 
       if ('serviceWorker' in navigator) {
         try { await navigator.serviceWorker.register('/sw.js?v=5'); } catch {}

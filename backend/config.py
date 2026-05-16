@@ -68,6 +68,12 @@ ROUTING_PRELOAD_MODES: List[str] = _get_csv('ROUTING_PRELOAD_MODES', 'walk,cycle
 
 ADMIN_USERNAMES: List[str] = _get_csv('ADMIN_USERNAMES', '')
 
+# Email verification (Gmail SMTP)
+EMAIL_ENABLED: bool = os.getenv('EMAIL_ENABLED', '0') == '1'
+EMAIL_FROM: str = os.getenv('EMAIL_FROM', '')
+EMAIL_PASSWORD: str = os.getenv('EMAIL_PASSWORD', '')
+APP_URL: str = os.getenv('APP_URL', 'http://localhost:8000')
+
 
 def validate_runtime_config() -> List[str]:
     warnings: List[str] = []
