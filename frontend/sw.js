@@ -1,11 +1,11 @@
-const CACHE_NAME = 'saferoute-shell-v5';
+const CACHE_NAME = 'saferoute-shell-v6';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/login.html',
   '/profile.html',
-  '/app.js?v=5',
-  '/auth.js?v=5',
+  '/app.js?v=16',
+  '/auth.js?v=6',
 ];
 
 self.addEventListener('install', (event) => {

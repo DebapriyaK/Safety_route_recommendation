@@ -48,6 +48,7 @@ let _liveRouteSteps = [];
 let _liveRouteTotalM = 0;
 let _liveRouteMode = 'walk';
 let _activeSheetTab = 'safe';
+let _issueDragMarker = null;
 
 function showLoading(msg) {
   const el = document.getElementById('loading-overlay');
@@ -617,12 +618,21 @@ async function getRoutesFromInput() {
   }
 }
 
-function routeCard(p, type) {
+function routeCard(p, type, meta) {
   const mobile = window.innerWidth <= 768;
   const label = type === 'safe' ? 'Safe' : 'Fast';
   const border = type === 'safe' ? '#27ae60' : '#e67e22';
   const color = scoreColor(p.safety_score);
   const issues = p.issues_on_path ?? 0;
+  let debugBadge = '';
+  if (currentUser?.is_admin && meta) {
+    const src = meta.fast_route_source;
+    const olaExpected = meta.mode === 'drive';
+    const srcLabel = src === 'ola_maps' ? 'OLA Maps' : (olaExpected ? 'OSMnx fallback' : 'OSMnx');
+    const srcColor = src === 'ola_maps' ? '#4ade80' : (olaExpected ? '#f87171' : '#94a3b8');
+    const latency = meta.latency_ms != null ? ` &bull; ${meta.latency_ms}ms` : '';
+    debugBadge = `<div style="margin-top:6px;padding:4px 7px;background:#0f172a;border-radius:4px;font-size:10px;font-family:monospace;color:#94a3b8;">&#128295; <span style="color:${srcColor}">${srcLabel}</span>${latency}</div>`;
+  }
   return `
     <div class="route-card" id="route-card-${type}" style="border-left:4px solid ${border}">
       <div class="rc-label">${label}</div>
@@ -636,6 +646,7 @@ function routeCard(p, type) {
         <button class="small-btn small-btn-primary" onclick="startLiveNavigation('${type}')">${mobile ? 'Start' : 'Live'}</button>
       </div>
       ${mobile ? '<div class="route-card-hint">Preview directions first. Live location starts only after tapping Start.</div>' : ''}
+      ${debugBadge}
     </div>
   `;
 }
@@ -722,8 +733,8 @@ function drawRoutes(data) {
       <div id="sheet-detail">
         ${sameRoute ? `<div style="margin-bottom:8px;padding:8px;border-radius:8px;background:#ecfdf3;color:#0f5132;font-size:12px;">Safest route is also the fastest here.</div>` : ''}
         <div class="route-cards">
-          ${routeCard(safeProps, 'safe')}
-          ${hasFast ? routeCard(fastProps, 'fast') : ''}
+          ${routeCard(safeProps, 'safe', data.metadata)}
+          ${hasFast ? routeCard(fastProps, 'fast', data.metadata) : ''}
         </div>
       </div>
       <div id="live-nav-panel" style="margin-top:10px;"></div>
@@ -741,7 +752,7 @@ function drawRoutes(data) {
         <div style="margin-bottom:8px;padding:8px;border-radius:8px;background:#ecfdf3;color:#0f5132;font-size:12px;">
           The safest route is also the fastest here.
         </div>
-        <div class="route-cards">${routeCard(safeProps, 'safe')}</div>
+        <div class="route-cards">${routeCard(safeProps, 'safe', data.metadata)}</div>
         <div id="live-nav-panel" style="margin-top:10px;"></div>
         <div id="steps-panel" style="margin-top:10px;"></div>
       `;
@@ -749,8 +760,8 @@ function drawRoutes(data) {
       summaryEl.innerHTML = `
         <h4 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;">Route Comparison</h4>
         <div class="route-cards">
-          ${routeCard(safeProps, 'safe')}
-          ${routeCard(fastProps, 'fast')}
+          ${routeCard(safeProps, 'safe', data.metadata)}
+          ${routeCard(fastProps, 'fast', data.metadata)}
         </div>
         <div id="live-nav-panel" style="margin-top:10px;"></div>
         <div id="steps-panel" style="margin-top:10px;"></div>
@@ -1180,15 +1191,84 @@ function isAmbiguousIssue(issue) {
   return (issue.effective_confidence ?? 0) <= 55;
 }
 
+function _issueFormHtml(lat, lon) {
+  return `
+    <div style="min-width:210px">
+      <b style="font-size:14px">Report Issue</b><br><br>
+      <label style="font-size:12px;color:#555">Category</label><br>
+      <select id="issue-category" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
+        <option>Broken Streetlight</option>
+        <option>Pothole</option>
+        <option>Narrow Lane</option>
+        <option>Unsafe Area</option>
+        <option>Other</option>
+      </select>
+      <label style="font-size:12px;color:#555">Severity</label><br>
+      <select id="issue-severity" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
+        <option value="low">Low — minor inconvenience</option>
+        <option value="medium" selected>Medium — noticeable hazard</option>
+        <option value="high">High — serious danger</option>
+      </select>
+      <label style="font-size:12px;color:#555">Description (optional)</label><br>
+      <input id="issue-desc" placeholder="Brief description..." style="width:100%;padding:5px;margin-bottom:10px;border-radius:5px;border:1px solid #ddd;font-size:13px"/><br>
+      <button onclick="submitIssue(${lat}, ${lon})" style="width:100%;padding:8px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Submit Report</button>
+    </div>
+  `;
+}
+
+function _startIssuePlacement(lat, lon) {
+  if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+
+  const icon = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;background:#e74c3c;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.45);cursor:grab"></div>',
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+
+  _issueDragMarker = L.marker([lat, lon], { draggable: true, icon }).addTo(map);
+
+  const openForm = () => {
+    const pos = _issueDragMarker.getLatLng();
+    L.popup({ maxWidth: 260 })
+      .setLatLng(pos)
+      .setContent(_issueFormHtml(pos.lat, pos.lng))
+      .openOn(map);
+  };
+
+  openForm();
+  showToast('Drag the red marker to the exact spot if needed.', 4000);
+  _issueDragMarker.on('dragend', openForm);
+}
+
 function enableIssueMode() {
   if (!currentUser) {
     showToast('Please login to report issues.');
     setTimeout(() => (window.location.href = 'login.html'), 1200);
     return;
   }
-  issueMode = true;
-  showToast('Click on the map to place the issue marker.');
-  map.getContainer().style.cursor = 'crosshair';
+  if (navigator.geolocation) {
+    showLoading('Getting your location…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        hideLoading();
+        const { latitude, longitude } = pos.coords;
+        map.flyTo([latitude, longitude], 17, { animate: true, duration: 0.9 });
+        setTimeout(() => _startIssuePlacement(latitude, longitude), 950);
+      },
+      () => {
+        hideLoading();
+        issueMode = true;
+        showToast('Location unavailable — tap the map to mark the issue.');
+        map.getContainer().style.cursor = 'crosshair';
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  } else {
+    issueMode = true;
+    showToast('Tap on the map to place the issue marker.');
+    map.getContainer().style.cursor = 'crosshair';
+  }
 }
 
 map.on('contextmenu', function (e) {
@@ -1215,32 +1295,10 @@ map.on('click', function (e) {
   if (!issueMode) return;
   issueMode = false;
   map.getContainer().style.cursor = '';
-
   const { lat, lng } = e.latlng;
-  L.popup()
+  L.popup({ maxWidth: 260 })
     .setLatLng(e.latlng)
-    .setContent(`
-      <div style="min-width:210px">
-        <b style="font-size:14px">Report Issue</b><br><br>
-        <label style="font-size:12px;color:#555">Category</label><br>
-        <select id="issue-category" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
-          <option>Broken Streetlight</option>
-          <option>Pothole</option>
-          <option>Narrow Lane</option>
-          <option>Unsafe Area</option>
-          <option>Other</option>
-        </select>
-        <label style="font-size:12px;color:#555">Severity</label><br>
-        <select id="issue-severity" style="width:100%;padding:5px;margin-bottom:8px;border-radius:5px;border:1px solid #ddd">
-          <option value="low">Low — minor inconvenience</option>
-          <option value="medium" selected>Medium — noticeable hazard</option>
-          <option value="high">High — serious danger</option>
-        </select>
-        <label style="font-size:12px;color:#555">Description (optional)</label><br>
-        <input id="issue-desc" placeholder="Brief description..." style="width:100%;padding:5px;margin-bottom:10px;border-radius:5px;border:1px solid #ddd;font-size:13px"/><br>
-        <button onclick="submitIssue(${lat}, ${lng})" style="width:100%;padding:8px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Submit Report</button>
-      </div>
-    `)
+    .setContent(_issueFormHtml(lat, lng))
     .openOn(map);
 });
 
@@ -1268,13 +1326,11 @@ async function submitIssue(lat, lon) {
       return;
     }
 
+    if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
     map.closePopup();
     showToast('Issue reported successfully!');
 
-    if (lastRoutePayload) {
-      // refresh current route so route-specific issues update
-      getRoutesFromInput();
-    }
+    if (lastRoutePayload) getRoutesFromInput();
     if (document.getElementById('toggle-heatmap')?.checked) loadHeatmap();
   } catch {
     showToast('Failed to submit. Is the backend running?');
@@ -1619,7 +1675,7 @@ function wireControls() {
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
-    await navigator.serviceWorker.register('/sw.js?v=5');
+    await navigator.serviceWorker.register('/sw.js?v=6');
   } catch {}
 }
 

@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import requests as _requests
+
 import networkx as nx
 import osmnx as ox
 from shapely.geometry import Point
@@ -16,6 +18,7 @@ from backend.config import (
     DEFAULT_CITY_LON,
     GRAPH_CACHE_MAX_ITEMS,
     GRAPH_CACHE_TTL_MINUTES,
+    OLA_MAPS_KEY,
     ROUTING_CACHE_CENTER_DECIMALS,
     ROUTING_GRAPH_MAX_DIST_M,
     ROUTING_GRAPH_MIN_DIST_M,
@@ -556,6 +559,166 @@ def preload_city_graphs() -> None:
             print(f'[routing-preload] skipped mode={mode}: {exc}')
 
 
+
+def _decode_polyline(encoded: str) -> List[Tuple[float, float]]:
+    """Decode a Google-encoded polyline string into a list of (lat, lon) tuples."""
+    coords, index, lat, lng = [], 0, 0, 0
+    n = len(encoded)
+    while index < n:
+        result, shift = 0, 0
+        while True:
+            b = ord(encoded[index]) - 63
+            index += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        lat += (~(result >> 1) if result & 1 else result >> 1)
+        result, shift = 0, 0
+        while True:
+            b = ord(encoded[index]) - 63
+            index += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        lng += (~(result >> 1) if result & 1 else result >> 1)
+        coords.append((lat / 1e5, lng / 1e5))
+    return coords
+
+
+_OLA_MODE_MAP = {'drive': 'driving', 'walk': 'walking', 'cycle': 'bike'}
+
+
+def _fetch_ola_fast_route(
+    origin_lat: float, origin_lon: float,
+    dest_lat: float, dest_lon: float,
+    mode: str, api_key: str,
+) -> Optional[dict]:
+    """Call OLA Maps Directions API for a traffic-aware fast route.
+
+    Returns a dict {coords, duration_min, dist_km, steps} or None on any
+    failure so the caller silently falls back to the OSMnx fast route.
+    """
+    if not api_key:
+        return None
+    try:
+        resp = _requests.post(
+            'https://api.olamaps.io/routing/v1/directions',
+            params={
+                'origin': f'{origin_lat},{origin_lon}',
+                'destination': f'{dest_lat},{dest_lon}',
+                'mode': _OLA_MODE_MAP.get(mode, 'driving'),
+                'overview': 'full',
+                'steps': 'true',
+                'api_key': api_key,
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            print(f'[ola-directions] HTTP {resp.status_code}')
+            return None
+        data = resp.json()
+        if data.get('status') != 'SUCCESS' or not data.get('routes'):
+            print(f'[ola-directions] status={data.get("status")}')
+            return None
+
+        route = data['routes'][0]
+        leg = route['legs'][0]
+        encoded = route.get('overview_polyline', '')
+        if not encoded:
+            return None
+
+        latlon_pairs = _decode_polyline(encoded)
+        if len(latlon_pairs) < 2:
+            return None
+
+        coords = [[round(lon, 6), round(lat, 6)] for lat, lon in latlon_pairs]
+        duration_min = round(leg['duration'] / 60.0, 1)
+        dist_km = round(leg['distance'] / 1000.0, 2)
+
+        raw_steps = leg.get('steps', [])
+        steps = [
+            {'instruction': s.get('instructions', ''), 'distance_m': int(s.get('distance', 0)), 'street': ''}
+            for s in raw_steps if s.get('instructions')
+        ]
+        if steps:
+            steps.append({'instruction': 'Arrive at your destination', 'distance_m': 0, 'street': ''})
+
+        print(f'[ola-directions] traffic-aware fast route: {dist_km} km, {duration_min} min')
+        return {'coords': coords, 'duration_min': duration_min, 'dist_km': dist_km, 'steps': steps}
+
+    except Exception as exc:
+        print(f'[ola-directions] failed: {exc}')
+        return None
+
+
+def _score_ola_route(
+    g_proj, coords_lonlat: List, proj_issues: List, kdtree, mode: str, hour: int,
+) -> Tuple[float, List[dict]]:
+    """Compute safety score and nearby-issue list for an OLA Maps route.
+
+    Projects each sampled coordinate into the graph CRS and queries the same
+    KDTree used for the OSMnx safe route, so penalties are consistent.
+    """
+    if not coords_lonlat:
+        return 75.0, []
+    crs = g_proj.graph.get('crs')
+    if not crs or kdtree is None or not proj_issues:
+        return 75.0, []
+
+    radius = ISSUE_RADIUS.get(mode, 50)
+    hit_indices: set = set()
+    step = max(1, len(coords_lonlat) // 80)
+    for lonlat in coords_lonlat[::step]:
+        try:
+            pt, _ = ox.projection.project_geometry(
+                Point(lonlat[0], lonlat[1]), crs='EPSG:4326', to_crs=crs
+            )
+            hit_indices.update(kdtree.query_ball_point([pt.x, pt.y], r=radius))
+        except Exception:
+            pass
+
+    issues_detail: List[dict] = []
+    total_penalty = 0.0
+    for idx in hit_indices:
+        _x, _y, issue = proj_issues[idx]
+        cat = issue.get('category', 'Other')
+        conf = float(issue.get('effective_confidence', issue.get('confidence_score', 65)))
+        n_rep = issue.get('num_reports', 1)
+        n_con = issue.get('num_confirmations', 0)
+        n_dis = issue.get('num_dismissals', 0)
+        credibility = min(1.0, max(0.15, 0.20 * n_rep + 0.20 * n_con - 0.10 * n_dis))
+        severity_factor = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(
+            issue.get('severity', 'medium'), 1.0
+        )
+        total_penalty += (
+            ISSUE_PENALTIES.get(cat, 10)
+            * credibility * conf
+            * _category_time_factor(cat, hour)
+            * severity_factor
+            / 100.0
+        )
+        issues_detail.append({
+            'id': issue.get('id'),
+            'lat': issue.get('lat'),
+            'lon': issue.get('lon'),
+            'category': cat,
+            'description': issue.get('description', ''),
+            'effective_confidence': conf,
+            'num_reports': n_rep,
+            'num_confirmations': n_con,
+            'num_dismissals': n_dis,
+        })
+
+    issues_detail.sort(key=lambda x: (
+        -float(x.get('effective_confidence', 0)),
+        -(int(x.get('num_reports', 0)) + int(x.get('num_confirmations', 0))),
+    ))
+    safety_score = max(0.0, min(100.0, 75.0 - min(total_penalty, 60.0)))
+    return round(safety_score, 1), issues_detail
+
+
 def _category_time_factor(category: str, current_hour: int) -> float:
     # Night: 6 pm (18) to 6 am — covers Bangalore's earliest sunset (~5:55 pm Dec)
     is_night = current_hour >= 18 or current_hour < 6
@@ -1076,6 +1239,9 @@ def get_routes(
     # Geometry/stats extraction still uses the directed g_proj so output stays valid.
     g_path = g_proj.to_undirected()
 
+    _now = datetime.now(_IST)
+    _hour = _now.hour
+
     def _safe_w(u, v, d):
         return min(
             safe_weights.get((u, v, k),
@@ -1149,6 +1315,24 @@ def get_routes(
 
     safe_steps = build_turn_steps(g_proj, safe_nodes)
     fast_steps = build_turn_steps(g_proj, fast_nodes)
+    fast_route_source = 'osmnx'
+
+    # For drive mode, replace the OSMnx fast route with OLA Maps' traffic-aware route.
+    # Walk/cycle are unaffected by traffic so OSMnx is kept for those.
+    if OLA_MAPS_KEY and mode == 'drive':
+        ola = _fetch_ola_fast_route(origin_lat, origin_lon, dest_lat, dest_lon, mode, OLA_MAPS_KEY)
+        if ola:
+            fast_route_source = 'ola_maps'
+            fast_coords = ola['coords']
+            fast_dist = ola['dist_km']
+            fast_time = ola['duration_min']
+            if ola['steps']:
+                fast_steps = ola['steps']
+            fast_score, fast_issue_details = _score_ola_route(
+                g_proj, fast_coords, proj_issues, kdtree, mode, _hour
+            )
+            fast_issues = len(fast_issue_details)
+
     same_route = (safe_nodes == fast_nodes) or (
         safe_dist > 0
         and fast_dist > 0
@@ -1197,5 +1381,6 @@ def get_routes(
             'network_type': config['network_type'],
             'speed_kmh': config['speed_kmh'],
             'same_route': same_route,
+            'fast_route_source': fast_route_source,
         },
     }

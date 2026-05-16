@@ -352,6 +352,8 @@ def compute_route(
 
     elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     print(f"[route] mode={req.mode} issues={len(issues_data)} latency_ms={elapsed_ms}")
+    if isinstance(result.get('metadata'), dict):
+        result['metadata']['latency_ms'] = elapsed_ms
 
     # Log route event for analytics (non-blocking; failure must not break the response)
     try:
