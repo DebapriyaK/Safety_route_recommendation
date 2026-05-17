@@ -634,10 +634,9 @@ function routeCard(p, type, meta) {
   const issues = p.issues_on_path ?? 0;
   let debugBadge = '';
   if (currentUser?.is_admin && meta) {
-    const src = meta.fast_route_source;
-    const olaExpected = meta.mode === 'drive';
-    const srcLabel = src === 'ola_maps' ? 'OLA Maps' : (olaExpected ? 'OSMnx fallback' : 'OSMnx');
-    const srcColor = src === 'ola_maps' ? '#4ade80' : (olaExpected ? '#f87171' : '#94a3b8');
+    const src = type === 'safe' ? meta.safe_route_source : meta.fast_route_source;
+    const srcLabel = src === 'ola_maps' ? 'OLA Maps' : src === 'ors' ? 'ORS' : 'OSMnx';
+    const srcColor = src === 'ola_maps' ? '#4ade80' : src === 'ors' ? '#60a5fa' : '#94a3b8';
     const latency = meta.latency_ms != null ? ` &bull; ${meta.latency_ms}ms` : '';
     debugBadge = `<div style="margin-top:6px;padding:4px 7px;background:#0f172a;border-radius:4px;font-size:10px;font-family:monospace;color:#94a3b8;">&#128295; <span style="color:${srcColor}">${srcLabel}</span>${latency}</div>`;
   }

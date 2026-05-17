@@ -34,6 +34,7 @@ ACCESS_TOKEN_EXPIRE_HOURS: int = _get_int('ACCESS_TOKEN_EXPIRE_HOURS', 24)
 
 GEOAPIFY_KEY: str = os.getenv('GEOAPIFY_KEY', '')  # set via environment variable — never hardcode
 OLA_MAPS_KEY: str = os.getenv('OLA_MAPS_KEY', '')
+ORS_API_KEY: str = os.getenv('ORS_API_KEY', '')
 DEFAULT_CITY_LAT: float = _get_float('DEFAULT_CITY_LAT', 12.9716)
 DEFAULT_CITY_LON: float = _get_float('DEFAULT_CITY_LON', 77.5946)
 
