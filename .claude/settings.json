@@ -16,7 +16,16 @@
       "Bash(Get-ChildItem -Path \"d:\\\\College Stuff\\\\SEM6\\\\swe\\\\test\" -Recurse -File)",
       "Bash(Select-Object FullName)",
       "Bash(Sort-Object FullName)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(python -m pytest --version)",
+      "Bash(New-Item -ItemType Directory -Force \"d:\\\\College Stuff\\\\SEM6\\\\swe\\\\test\\\\tests\")",
+      "Bash(Out-Null)",
+      "Bash(Write-Output \"done\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\College Stuff\\\\SEM6\\\\swe\\\\test\\\\tests\")",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -m pytest tests/test_auth.py::test_register_success -v --tb=long -s)",
+      "Bash(python -m pytest tests/test_auth.py -v --tb=short -s)",
+      "Bash(python -m pytest tests/test_auth.py::test_register_success tests/test_auth.py::test_register_duplicate_username tests/test_auth.py::test_login_success tests/test_auth.py::test_me_no_token --tb=long -q)"
     ],
     "additionalDirectories": [
       "d:\\College Stuff\\SEM6\\swe\\test\\backend\\graph_store"

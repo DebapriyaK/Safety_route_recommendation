@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_user
+from backend.config import ADMIN_USERNAMES
 from backend.database import get_db
 from backend.models import Issue, User, Validation
 
@@ -253,9 +254,12 @@ def create_issue(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _check_spam(db, current_user, body.lat, body.lon)
+    is_admin = current_user.username in ADMIN_USERNAMES
+    if not is_admin:
+        _check_spam(db, current_user, body.lat, body.lon)
 
     # Deduplication: aggregate nearby same-category reports instead of creating duplicates
+    # Admins bypass dedup so they can place multiple test markers in the same area.
     existing_nearby = (
         db.query(Issue)
         .filter(
@@ -268,7 +272,7 @@ def create_issue(
         )
         .first()
     )
-    if existing_nearby:
+    if existing_nearby and not is_admin:
         existing_nearby.num_reports += 1
         # Escalate severity if new reporter marks it higher
         severity_rank = {'low': 0, 'medium': 1, 'high': 2}
@@ -471,3 +475,20 @@ def validate_issue(
 
     db.refresh(issue)
     return _issue_to_dict(issue)
+
+
+@router.delete("/{issue_id}", status_code=status.HTTP_200_OK)
+def delete_issue(
+    issue_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.username not in ADMIN_USERNAMES:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    issue.is_active = False
+    issue.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"deleted": issue_id}

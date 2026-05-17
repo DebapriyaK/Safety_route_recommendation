@@ -28,7 +28,6 @@ let issueMode = false;
 let routeLayer = null;
 let markerLayer = null;
 let issueClusterLayer = null; // route-specific issue markers only
-let heatmapLayer = null;
 let currentUser = null;
 let originCoords = null;
 let destCoords = null;
@@ -49,6 +48,8 @@ let _liveRouteTotalM = 0;
 let _liveRouteMode = 'walk';
 let _activeSheetTab = 'safe';
 let _issueDragMarker = null;
+let adminIssueLayer = null;
+let globalIssueLayer = null;
 
 function showLoading(msg) {
   const el = document.getElementById('loading-overlay');
@@ -109,9 +110,12 @@ function updateNavbar(user) {
       <button class="nav-btn" onclick="logout()">Logout</button>
     `;
     if (mobileBtn) mobileBtn.style.display = user.is_admin ? '' : 'none';
+    if (user.is_admin) loadAdminIssueLayer();
+    else { if (adminIssueLayer) { map.removeLayer(adminIssueLayer); adminIssueLayer = null; } }
   } else {
     userInfo.innerHTML = '<a class="nav-link" href="login.html">Login</a>';
     if (mobileBtn) mobileBtn.style.display = 'none';
+    if (adminIssueLayer) { map.removeLayer(adminIssueLayer); adminIssueLayer = null; }
   }
 }
 
@@ -443,11 +447,15 @@ function drawRouteIssueMarkers(routeData) {
       weight: 2,
     });
 
+    const adminDeleteHtml = currentUser?.is_admin
+      ? `<br><button onclick="deleteIssue('${issue.id}')" style="margin-top:6px;padding:4px 10px;background:#7f1d1d;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:11px;">&#128465; Delete (Admin)</button>`
+      : '';
     const validationHtml = currentUser
       ? `
         <br><br>
         <button onclick="validateIssue('${issue.id}','confirm')" style="margin-right:6px;padding:4px 10px;background:#27ae60;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">Still there</button>
         <button onclick="validateIssue('${issue.id}','dismiss')" style="padding:4px 10px;background:#e74c3c;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">Fixed/Gone</button>
+        ${adminDeleteHtml}
       `
       : '<br><small style="color:#888">Login to validate</small>';
 
@@ -548,7 +556,7 @@ async function getRoutesFromInput() {
         radius: 10, color: '#fff', weight: 2.5, fillColor: '#22c55e', fillOpacity: 1,
       }).bindPopup('<b>Start</b>'),
       L.circleMarker([dest_lat, dest_lon], {
-        radius: 10, color: '#fff', weight: 2.5, fillColor: '#ef4444', fillOpacity: 1,
+        radius: 10, color: '#fff', weight: 2.5, fillColor: '#3b82f6', fillOpacity: 1,
       }).bindPopup('<b>Destination</b>'),
     ]).addTo(map);
 
@@ -645,7 +653,7 @@ function routeCard(p, type, meta) {
         <button class="small-btn" onclick="showSteps('${type}')">${mobile ? 'Directions' : 'Steps'}</button>
         <button class="small-btn small-btn-primary" onclick="startLiveNavigation('${type}')">${mobile ? 'Start' : 'Live'}</button>
       </div>
-      ${mobile ? '<div class="route-card-hint">Preview directions first. Live location starts only after tapping Start.</div>' : ''}
+      ${mobile ? '<div class="route-card-hint">Tap Directions to see route overview. Tap Start to begin live turn-by-turn.</div>' : ''}
       ${debugBadge}
     </div>
   `;
@@ -767,34 +775,26 @@ function drawRoutes(data) {
         <div id="steps-panel" style="margin-top:10px;"></div>
       `;
     }
-    showSteps('safe');
   }
 }
 
 function showSteps(type) {
-  const panel = document.getElementById('steps-panel');
-  if (!panel || !lastRoutePayload?.data) return;
+  const feature = getRouteFeature(type);
+  if (!feature?.geometry?.coordinates?.length) return;
 
-  const feature = (lastRoutePayload.data.features || []).find((f) => f.properties?.route_type === type);
-  const steps = feature?.properties?.steps || [];
-  const title = type === 'safe' ? 'Safe Route Steps' : 'Fast Route Steps';
-
-  if (!steps.length) {
-    panel.innerHTML = '';
-    return;
-  }
-
-  document.querySelectorAll('.route-card').forEach((card) => {
-    card.classList.remove('route-card-active');
-  });
+  document.querySelectorAll('.route-card').forEach((card) => card.classList.remove('route-card-active'));
   document.getElementById(`route-card-${type}`)?.classList.add('route-card-active');
 
-  panel.innerHTML = `
-    <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">${title}</div>
-    <ol style="margin:0;padding-left:16px;font-size:12px;color:#1f2937;line-height:1.5;max-height:180px;overflow:auto;">
-      ${steps.map((s) => `<li style="margin-bottom:4px;">${escHtml(s.instruction || '')}</li>`).join('')}
-    </ol>
-  `;
+  // Bird's-eye view: fit the full route instead of showing text steps
+  const latLngs = feature.geometry.coordinates.map((c) => [c[1], c[0]]);
+  map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], animate: true });
+
+  // Clear any leftover steps text
+  const panel = document.getElementById('steps-panel');
+  if (panel) panel.innerHTML = '';
+
+  // On mobile, close the sidebar so the map is visible
+  if (window.innerWidth <= 768) closeMobileSearch();
 }
 
 function getRouteFeature(type) {
@@ -888,6 +888,7 @@ function stopLiveNavigation(silent = false) {
   _liveRouteCoords = [];
   _liveRouteSteps = [];
   _liveRouteTotalM = 0;
+  _lastNavLat = null; _lastNavLon = null; _liveHeading = 0;
   if (silent) {
     renderLivePanel('');
     return;
@@ -904,18 +905,28 @@ function updateLiveNavigation(position) {
   const accuracy = Number(position.coords.accuracy || 0);
   const ll = [userLat, userLon];
 
+  // Resolve heading: prefer GPS heading, fall back to computed bearing from last position
+  let heading = position.coords.heading;
+  if (heading === null || isNaN(heading)) {
+    if (_lastNavLat !== null) {
+      heading = _computeBearing(_lastNavLat, _lastNavLon, userLat, userLon);
+    } else {
+      heading = _liveHeading;
+    }
+  }
+  _liveHeading = heading;
+  _lastNavLat = userLat; _lastNavLon = userLon;
+
+  const arrowIcon = _navArrowIcon(heading);
   if (!_liveMarker) {
-    _liveMarker = L.circleMarker(ll, {
-      radius: 8,
-      color: '#1d4ed8',
-      fillColor: '#3b82f6',
-      fillOpacity: 0.95,
-      weight: 2,
-    }).addTo(map);
-    _liveMarker.bindPopup('<b>Your live location</b>');
+    _liveMarker = L.marker(ll, { icon: arrowIcon, zIndexOffset: 1000 }).addTo(map);
   } else {
     _liveMarker.setLatLng(ll);
+    _liveMarker.setIcon(arrowIcon);
   }
+
+  // Keep map centred on user (smooth pan)
+  map.panTo(ll, { animate: true, duration: 0.5 });
 
   if (!_liveAccuracyCircle) {
     _liveAccuracyCircle = L.circle(ll, {
@@ -973,6 +984,29 @@ function updateLiveNavigation(position) {
 }
 
 let _pendingNavType = null;
+let _lastNavLat = null;
+let _lastNavLon = null;
+let _liveHeading = 0;
+
+function _computeBearing(lat1, lon1, lat2, lon2) {
+  const toRad = Math.PI / 180;
+  const dLon = (lon2 - lon1) * toRad;
+  const y = Math.sin(dLon) * Math.cos(lat2 * toRad);
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+            Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function _navArrowIcon(heading) {
+  return L.divIcon({
+    html: `<svg width="36" height="36" viewBox="0 0 36 36" style="transform:rotate(${heading}deg);display:block;">
+      <polygon points="18,3 30,30 18,24 6,30" fill="#1d4ed8" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>
+    </svg>`,
+    className: '',
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+  });
+}
 
 function showLocationConfirm(type) {
   _pendingNavType = type;
@@ -1018,9 +1052,12 @@ function beginLiveNavigation(type) {
   _liveRouteTotalM = routeLengthMeters(coords);
 
   if (_navWatchId !== null) stopLiveNavigation(true);
+  _lastNavLat = null; _lastNavLon = null; _liveHeading = 0;
 
   navigator.geolocation.getCurrentPosition(
     (pos) => {
+      // Zoom into user position like Google Maps navigation mode
+      map.setView([pos.coords.latitude, pos.coords.longitude], 17, { animate: true });
       updateLiveNavigation(pos);
       _navWatchId = navigator.geolocation.watchPosition(
         updateLiveNavigation,
@@ -1136,54 +1173,80 @@ async function checkSavedRouteAlerts() {
   } catch {}
 }
 
-function heatColor(intensity) {
-  if (intensity >= 0.75) return '#d73027';
-  if (intensity >= 0.5) return '#fc8d59';
-  if (intensity >= 0.25) return '#fee08b';
-  return '#91cf60';
-}
 
-async function loadHeatmap() {
-  const bounds = map.getBounds();
-  const url = `${API_BASE}/issues/heatmap?lat_min=${bounds.getSouth()}&lat_max=${bounds.getNorth()}&lon_min=${bounds.getWest()}&lon_max=${bounds.getEast()}&cell_size=0.005`;
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (heatmapLayer) map.removeLayer(heatmapLayer);
-  heatmapLayer = L.geoJSON(data, {
-    style: (feature) => {
-      const i = feature?.properties?.intensity ?? 0;
-      return {
-        color: '#555',
-        weight: 0.5,
-        fillColor: heatColor(i),
-        fillOpacity: Math.max(0.18, i * 0.55),
-      };
-    },
-    onEachFeature: (feature, layer) => {
-      const p = feature.properties || {};
-      layer.bindPopup(`
-        <b>Area Safety Density</b><br>
-        Active issues: ${p.issue_count ?? 0}<br>
-        Avg confidence: ${p.avg_effective_confidence ?? 0}
-      `);
-    },
-  }).addTo(map);
-}
-
-async function toggleHeatmap(on) {
+async function toggleIssueLayer(on) {
   if (!on) {
-    if (heatmapLayer) {
-      map.removeLayer(heatmapLayer);
-      heatmapLayer = null;
-    }
+    if (globalIssueLayer) { map.removeLayer(globalIssueLayer); globalIssueLayer = null; }
     return;
   }
   try {
-    await loadHeatmap();
+    await loadGlobalIssueLayer();
   } catch {
-    showToast('Unable to load heatmap right now.');
+    showToast('Unable to load issue markers right now.');
   }
+}
+
+async function loadGlobalIssueLayer() {
+  if (globalIssueLayer) { map.removeLayer(globalIssueLayer); globalIssueLayer = null; }
+
+  const res = await fetch(`${API_BASE}/issues`);
+  const issues = await res.json();
+  if (!Array.isArray(issues)) return;
+
+  // Use MarkerClusterGroup so nearby issues pool into a single badge
+  globalIssueLayer = L.markerClusterGroup({
+    maxClusterRadius: 40,
+    iconCreateFunction: (cluster) => {
+      const count = cluster.getChildCount();
+      return L.divIcon({
+        html: `<div style="background:#e74c3c;color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)">${count}</div>`,
+        className: '',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+      });
+    },
+  });
+
+  for (const issue of issues) {
+    const stale = (issue.effective_confidence || 0) <= 55;
+    const sevColor = { low: '#f39c12', medium: '#e67e22', high: '#e74c3c' }[issue.severity] || '#e67e22';
+    const marker = L.circleMarker([issue.lat, issue.lon], {
+      radius: 8,
+      color: stale ? '#e67e22' : '#e74c3c',
+      fillColor: stale ? '#f39c12' : '#e74c3c',
+      fillOpacity: 0.85,
+      weight: 2,
+    });
+
+    const validateHtml = currentUser && currentUser.id !== issue.reporter_id ? `
+      <div style="margin-top:8px;display:flex;gap:6px;">
+        <button onclick="validateIssue('${issue.id}','confirm')" style="flex:1;padding:4px 0;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Still there</button>
+        <button onclick="validateIssue('${issue.id}','dismiss')" style="flex:1;padding:4px 0;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Fixed/Gone</button>
+      </div>` : (currentUser ? '' : '<p style="font-size:11px;color:#888;margin:6px 0 0">Login to validate</p>');
+
+    const adminBtn = currentUser?.is_admin
+      ? `<button onclick="deleteIssue('${issue.id}')" style="margin-top:6px;width:100%;padding:3px 0;background:#7f1d1d;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">&#128465; Delete (Admin)</button>`
+      : '';
+
+    marker.bindPopup(`
+      <div style="min-width:180px">
+        <b style="font-size:13px">${escHtml(issue.category)}</b>
+        <span style="float:right;padding:1px 6px;background:${sevColor};color:#fff;border-radius:10px;font-size:10px">${issue.severity}</span>
+        <div style="clear:both"></div>
+        ${issue.description ? `<p style="margin:4px 0;font-size:12px;color:#555">${escHtml(issue.description)}</p>` : ''}
+        <div style="font-size:11px;color:#666;margin-top:4px">
+          Confidence: <b>${Math.round(issue.effective_confidence || 0)}</b> &bull;
+          ${issue.num_reports} report${issue.num_reports !== 1 ? 's' : ''} &bull;
+          ${issue.num_confirmations} confirm &bull; ${issue.num_dismissals} dismiss
+        </div>
+        ${validateHtml}${adminBtn}
+      </div>
+    `);
+
+    globalIssueLayer.addLayer(marker);
+  }
+
+  globalIssueLayer.addTo(map);
 }
 
 function isAmbiguousIssue(issue) {
@@ -1330,8 +1393,9 @@ async function submitIssue(lat, lon) {
     map.closePopup();
     showToast('Issue reported successfully!');
 
+    if (currentUser?.is_admin) loadAdminIssueLayer();
+    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
     if (lastRoutePayload) getRoutesFromInput();
-    if (document.getElementById('toggle-heatmap')?.checked) loadHeatmap();
   } catch {
     showToast('Failed to submit. Is the backend running?');
   }
@@ -1376,10 +1440,56 @@ async function validateIssue(issueId, response) {
     const label = response === 'confirm' ? 'Confirmed' : 'Dismissed';
     showToast(`${label}. New confidence: ${Math.round(data.confidence_score)}`);
 
+    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
     if (lastRoutePayload) getRoutesFromInput();
-    if (document.getElementById('toggle-heatmap')?.checked) loadHeatmap();
   } catch {
     showToast('Validation failed. Please try again.');
+  }
+}
+
+async function loadAdminIssueLayer() {
+  if (!currentUser?.is_admin) return;
+  if (adminIssueLayer) { map.removeLayer(adminIssueLayer); adminIssueLayer = null; }
+  try {
+    const res = await fetch(`${API_BASE}/issues`);
+    const issues = await res.json();
+    if (!Array.isArray(issues)) return;
+    adminIssueLayer = L.layerGroup();
+    for (const issue of issues) {
+      const marker = L.circleMarker([issue.lat, issue.lon], {
+        radius: 9, color: '#7f1d1d', fillColor: '#ef4444', fillOpacity: 0.75, weight: 2,
+      });
+      marker.bindPopup(`
+        <b style="font-size:13px">${escHtml(issue.category)}</b><br>
+        ${issue.description ? escHtml(issue.description) + '<br>' : ''}
+        <small>Reporter: ${escHtml(issue.reporter_name || 'unknown')} &bull; Conf: ${Math.round(issue.effective_confidence || 0)}</small>
+        <br><button onclick="deleteIssue('${issue.id}')" style="margin-top:7px;padding:4px 12px;background:#7f1d1d;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">&#128465; Delete Issue</button>
+      `);
+      adminIssueLayer.addLayer(marker);
+    }
+    adminIssueLayer.addTo(map);
+  } catch {}
+}
+
+async function deleteIssue(id) {
+  if (!confirm('Delete this issue permanently?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/issues/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.detail || 'Delete failed.');
+      return;
+    }
+    map.closePopup();
+    showToast('Issue deleted.');
+    loadAdminIssueLayer();
+    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
+    if (lastRoutePayload) getRoutesFromInput();
+  } catch {
+    showToast('Delete failed. Is the backend running?');
   }
 }
 
@@ -1662,13 +1772,13 @@ function wireControls() {
   const routeBtn = document.getElementById('btn-get-route');
   if (routeBtn) routeBtn.onclick = getRoutesFromInput;
 
-  const heatToggle = document.getElementById('toggle-heatmap');
-  if (heatToggle) {
-    heatToggle.addEventListener('change', () => toggleHeatmap(heatToggle.checked));
+  const issueToggle = document.getElementById('toggle-issues');
+  if (issueToggle) {
+    issueToggle.addEventListener('change', () => toggleIssueLayer(issueToggle.checked));
   }
 
   map.on('moveend', () => {
-    if (document.getElementById('toggle-heatmap')?.checked) loadHeatmap().catch(() => {});
+    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer().catch(() => {});
   });
 }
 
@@ -1681,7 +1791,7 @@ async function registerServiceWorker() {
 
 function _placePin(type, lat, lon) {
   const isOrigin = type === 'origin';
-  const fillColor = isOrigin ? '#22c55e' : '#e74c3c';
+  const fillColor = isOrigin ? '#22c55e' : '#3b82f6';
   const label = isOrigin ? 'Start' : 'Destination';
   if (isOrigin) {
     if (_originPin) map.removeLayer(_originPin);
