@@ -26,7 +26,8 @@
       "Bash(python -m pytest tests/test_auth.py::test_register_success -v --tb=long -s)",
       "Bash(python -m pytest tests/test_auth.py -v --tb=short -s)",
       "Bash(python -m pytest tests/test_auth.py::test_register_success tests/test_auth.py::test_register_duplicate_username tests/test_auth.py::test_login_success tests/test_auth.py::test_me_no_token --tb=long -q)",
-      "Bash(railway --version)"
+      "Bash(railway --version)",
+      "Bash(python -c \"import backend.routing; print\\('OK'\\)\")"
     ],
     "additionalDirectories": [
       "d:\\College Stuff\\SEM6\\swe\\test\\backend\\graph_store"
