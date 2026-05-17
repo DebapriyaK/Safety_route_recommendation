@@ -105,7 +105,7 @@ function updateNavbar(user) {
   if (!userInfo) return;
   if (user) {
     userInfo.innerHTML = `
-      <a class="nav-link" href="profile.html">Profile</a>
+      <a class="nav-link" href="profile.html" title="Profile" style="font-size:18px;line-height:1;">&#128100;</a>
       <span class="nav-username">Hi, ${escHtml(user.username)}</span>
       <button class="nav-btn" onclick="logout()">Logout</button>
     `;
