@@ -1531,6 +1531,35 @@ function showValidationPopup(issueId, latlng) {
   L.popup().setLatLng(latlng).setContent(wrap).openOn(map);
 }
 
+function _clearRouteDisplay() {
+  if (routeLayer)        { map.removeLayer(routeLayer);        routeLayer        = null; }
+  if (markerLayer)       { map.removeLayer(markerLayer);       markerLayer       = null; }
+  if (issueClusterLayer) { map.removeLayer(issueClusterLayer); issueClusterLayer = null; }
+  lastRoutePayload = null;
+  const summaryEl = document.getElementById('route-summary');
+  if (summaryEl) {
+    summaryEl.style.display = 'none';
+    summaryEl.classList.remove('sheet-open', 'sheet-peek');
+  }
+  document.body.classList.remove('sheet-active');
+}
+
+function clearOriginInput() {
+  document.getElementById('originInput').value = '';
+  originCoords = null;
+  if (_originPin) { map.removeLayer(_originPin); _originPin = null; }
+  document.getElementById('originInput-list').style.display = 'none';
+  _clearRouteDisplay();
+}
+
+function clearDestInput() {
+  document.getElementById('destInput').value = '';
+  destCoords = null;
+  if (_destPin) { map.removeLayer(_destPin); _destPin = null; }
+  document.getElementById('destInput-list').style.display = 'none';
+  _clearRouteDisplay();
+}
+
 function useMyLocation() {
   if (!navigator.geolocation) {
     showToast('Geolocation is not supported by your browser.');

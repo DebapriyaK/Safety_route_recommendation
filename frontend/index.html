@@ -92,6 +92,14 @@
       color: #374151; transition: background 0.15s;
     }
     .gps-btn:hover { background: #e5e7eb; }
+    .clear-btn {
+      flex-shrink: 0; padding: 0; width: 28px; height: 28px;
+      border: 1px solid #d1d5db; background: #f8fafc; cursor: pointer;
+      font-size: 14px; color: #9ca3af; line-height: 1;
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      transition: color 0.15s, background 0.15s;
+    }
+    .clear-btn:hover { color: #374151; background: #e5e7eb; }
 
     .autocomplete-list {
       display: none; position: absolute; top: 100%; left: 0; right: 0;
@@ -444,13 +452,17 @@
     <div class="input-wrapper">
       <div class="input-row">
         <input id="originInput" placeholder="📍 Origin — or long-press map" autocomplete="off" />
+        <button class="clear-btn" onclick="clearOriginInput()" title="Clear origin">✕</button>
         <button class="gps-btn" onclick="useMyLocation()" title="Use my current location">📍</button>
       </div>
       <div id="originInput-list" class="autocomplete-list"></div>
     </div>
 
     <div class="input-wrapper">
-      <input id="destInput" placeholder="🏁 Destination — or long-press map" autocomplete="off" />
+      <div class="input-row">
+        <input id="destInput" placeholder="🏁 Destination — or long-press map" autocomplete="off" />
+        <button class="clear-btn" onclick="clearDestInput()" title="Clear destination">✕</button>
+      </div>
       <div id="destInput-list" class="autocomplete-list"></div>
     </div>
 

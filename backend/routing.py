@@ -477,7 +477,7 @@ def get_graph(origin_lat: float, origin_lon: float, dest_lat: float, dest_lon: f
     raw_dist = straight * 1.5 + 800
     dist = int(round(min(max(raw_dist, ROUTING_GRAPH_MIN_DIST_M), ROUTING_GRAPH_MAX_DIST_M) / 500) * 500)
 
-    simplify_graph = not (straight < ROUTING_SHORT_TRIP_UNSIMPLIFIED_MAX_M)
+    simplify_graph = False
     center_key = _cache_center(center_lat, center_lon)
     cache_key = (mode, center_key[0], center_key[1], dist, simplify_graph)
 
@@ -653,19 +653,106 @@ def _fetch_ola_fast_route(
         return None
 
 
+def _fetch_ola_all_routes(
+    origin_lat: float, origin_lon: float,
+    dest_lat: float, dest_lon: float,
+    mode: str, api_key: str,
+) -> List[dict]:
+    """Call OLA Maps Directions API with alternatives=true for any travel mode.
+
+    Returns a list of route dicts {coords, duration_min, dist_km, steps}.
+    OLA supports driving (traffic-aware), walking, and bike modes.
+    Returns empty list on any failure so the caller falls back to OSMnx.
+    """
+    if not api_key:
+        return []
+    try:
+        resp = _requests.post(
+            'https://api.olamaps.io/routing/v1/directions',
+            params={
+                'origin': f'{origin_lat},{origin_lon}',
+                'destination': f'{dest_lat},{dest_lon}',
+                'mode': _OLA_MODE_MAP.get(mode, 'driving'),
+                'overview': 'full',
+                'steps': 'true',
+                'alternatives': 'true',
+                'api_key': api_key,
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f'[ola-directions] HTTP {resp.status_code}')
+            return []
+        data = resp.json()
+        if data.get('status') != 'SUCCESS' or not data.get('routes'):
+            print(f'[ola-directions] no routes, status={data.get("status")}')
+            return []
+
+        results = []
+        for route in data['routes']:
+            leg = route.get('legs', [{}])[0]
+            encoded = route.get('overview_polyline', '')
+            if not encoded:
+                continue
+            latlon_pairs = _decode_polyline(encoded)
+            if len(latlon_pairs) < 2:
+                continue
+            coords = [[round(lon, 6), round(lat, 6)] for lat, lon in latlon_pairs]
+            duration_min = round(leg.get('duration', 0) / 60.0, 1)
+            dist_km = round(leg.get('distance', 0) / 1000.0, 2)
+            raw_steps = leg.get('steps', [])
+            steps = [
+                {'instruction': s.get('instructions', ''), 'distance_m': int(s.get('distance', 0)), 'street': ''}
+                for s in raw_steps if s.get('instructions')
+            ]
+            if steps:
+                steps.append({'instruction': 'Arrive at your destination', 'distance_m': 0, 'street': ''})
+            results.append({'coords': coords, 'duration_min': duration_min, 'dist_km': dist_km, 'steps': steps})
+
+        print(f'[ola-directions] {len(results)} route(s) for mode={mode}')
+        return results
+
+    except Exception as exc:
+        print(f'[ola-directions] all-routes fetch failed: {exc}')
+        return []
+
+
 def _score_ola_route(
     g_proj, coords_lonlat: List, proj_issues: List, kdtree, mode: str, hour: int,
+    edge_kdtree=None, edge_score_list: List[float] = None,
 ) -> Tuple[float, List[dict]]:
     """Compute safety score and nearby-issue list for an OLA Maps route.
 
-    Projects each sampled coordinate into the graph CRS and queries the same
-    KDTree used for the OSMnx safe route, so penalties are consistent.
+    Baseline safety is derived from the nearest OSMnx edges (road-type scores),
+    then penalised by any reported issues near the route.  This replaces the
+    old hardcoded 75.0 baseline that caused fast routes to appear safer than
+    safe routes when no issues were present.
     """
     if not coords_lonlat:
-        return 75.0, []
+        return 65.0, []
     crs = g_proj.graph.get('crs')
-    if not crs or kdtree is None or not proj_issues:
-        return 75.0, []
+    if not crs:
+        return 65.0, []
+
+    # Road-type baseline: snap sampled route points to nearest OSMnx edges
+    road_baseline = 65.0
+    if edge_kdtree is not None and edge_score_list:
+        sampled: list = []
+        step_e = max(1, len(coords_lonlat) // 60)
+        for lonlat in coords_lonlat[::step_e]:
+            try:
+                pt, _ = ox.projection.project_geometry(
+                    Point(lonlat[0], lonlat[1]), crs='EPSG:4326', to_crs=crs
+                )
+                idx = edge_kdtree.query([pt.x, pt.y])[1]
+                sampled.append(edge_score_list[idx])
+            except Exception:
+                pass
+        if sampled:
+            road_baseline = round(sum(sampled) / len(sampled), 1)
+
+    if kdtree is None or not proj_issues:
+        return road_baseline, []
 
     radius = ISSUE_RADIUS.get(mode, 50)
     hit_indices: set = set()
@@ -715,7 +802,7 @@ def _score_ola_route(
         -float(x.get('effective_confidence', 0)),
         -(int(x.get('num_reports', 0)) + int(x.get('num_confirmations', 0))),
     ))
-    safety_score = max(0.0, min(100.0, 75.0 - min(total_penalty, 60.0)))
+    safety_score = max(0.0, min(100.0, road_baseline - min(total_penalty, road_baseline * 0.8)))
     return round(safety_score, 1), issues_detail
 
 
@@ -854,6 +941,29 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
         safe_weights[(u, v, key)] = length * (2.0 - adj_score / 100.0)
 
     return safe_weights, adj_scores, proj_issues, kdtree
+
+
+def _build_edge_kdtree(g, adj_scores: dict):
+    """Build a KDTree of edge midpoints with their adjusted safety scores.
+
+    Used to give OLA routes a proper road-type safety baseline instead of a
+    hardcoded number — we snap each sampled polyline point to the nearest
+    OSMnx edge and read its precomputed adj_score.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    mids: list = []
+    scores: list = []
+    for u, v, key, data in g.edges(keys=True, data=True):
+        un, vn = g.nodes[u], g.nodes[v]
+        mids.append([(un['x'] + vn['x']) / 2.0, (un['y'] + vn['y']) / 2.0])
+        scores.append(adj_scores.get((u, v, key), float(data.get('safety_score', 50.0))))
+
+    if not mids:
+        return None, []
+
+    return cKDTree(np.array(mids)), scores
 
 
 def _edge_payload(g_proj, u, v):
@@ -1233,137 +1343,153 @@ def get_routes(
     g_proj = get_graph(origin_lat, origin_lon, dest_lat, dest_lon, mode)
 
     safe_weights, adj_scores, proj_issues, kdtree = _precompute_safe_weights(g_proj, mode, issues_data)
+    edge_kdtree, edge_score_list = _build_edge_kdtree(g_proj, adj_scores)
 
-    # Use undirected pathfinding for ALL modes. One-way tags in Indian OSM data are
-    # frequently missing or wrong, causing directed routing to take large detours.
-    # Geometry/stats extraction still uses the directed g_proj so output stays valid.
-    g_path = g_proj.to_undirected()
+    _hour = datetime.now(_IST).hour
 
-    _now = datetime.now(_IST)
-    _hour = _now.hour
+    safe_coords: Optional[List] = None
+    fast_coords: Optional[List] = None
+    safe_dist = fast_dist = 0.0
+    safe_time = fast_time = 0.0
+    safe_score = fast_score = 0.0
+    safe_steps: List[dict] = []
+    fast_steps: List[dict] = []
+    safe_issue_details: List[dict] = []
+    fast_issue_details: List[dict] = []
+    fast_route_source = 'osmnx'
+    _same_route = False
 
-    def _safe_w(u, v, d):
-        return min(
-            safe_weights.get((u, v, k),
-                safe_weights.get((v, u, k),            # check reverse for undirected
-                    d[k].get('length', 1.0) * 1.5))    # fallback
-            for k in d if d
-        ) if d else 1.0
+    # ── Primary: OLA Maps for ALL modes (walk / cycle / drive) ───────────────
+    # OLA provides accurate road-following geometry for all three modes and
+    # traffic-aware duration for drive.  Walk and cycle get realistic OLA speed
+    # estimates instead of our fixed km/h fallback.
+    if OLA_MAPS_KEY:
+        ola_routes = _fetch_ola_all_routes(
+            origin_lat, origin_lon, dest_lat, dest_lon, mode, OLA_MAPS_KEY
+        )
+        if ola_routes:
+            scored = []
+            for r in ola_routes:
+                sc, iss = _score_ola_route(
+                    g_proj, r['coords'], proj_issues, kdtree, mode, _hour,
+                    edge_kdtree, edge_score_list,
+                )
+                scored.append((sc, r, iss))
 
-    def _fast_w(u, v, d):
-        return min(
-            float(d[k].get('length', 1.0)) / max(_edge_speed_kmh(d[k], mode), 1.0)
-            for k in d if d
-        ) if d else 1.0
+            # Safe = highest safety score; Fast = lowest travel time
+            safest  = max(scored, key=lambda x: x[0])
+            fastest = min(scored, key=lambda x: x[1]['duration_min'])
 
-    orig_geom, _ = ox.projection.project_geometry(
-        Point(origin_lon, origin_lat), crs='EPSG:4326', to_crs=g_proj.graph['crs']
-    )
-    dest_geom, _ = ox.projection.project_geometry(
-        Point(dest_lon, dest_lat), crs='EPSG:4326', to_crs=g_proj.graph['crs']
-    )
+            safe_score, safe_r, safe_issue_details = safest
+            fast_score, fast_r, fast_issue_details = fastest
 
-    orig_x, orig_y = orig_geom.coords[0]
-    dest_x, dest_y = dest_geom.coords[0]
+            safe_coords = safe_r['coords']
+            safe_dist   = safe_r['dist_km']
+            safe_time   = safe_r['duration_min']
+            safe_steps  = safe_r['steps']
 
-    orig_node = _nearest_node_on_graph(g_proj, orig_x, orig_y)
-    dest_node = _nearest_node_on_graph(g_proj, dest_x, dest_y)
+            fast_coords = fast_r['coords']
+            fast_dist   = fast_r['dist_km']
+            fast_time   = fast_r['duration_min']
+            fast_steps  = fast_r['steps']
 
-    if orig_node == dest_node:
-        return {'error': 'Origin and destination resolve to the same point on the map'}
+            fast_route_source = 'ola_maps'
+            # same_route only if OLA returned 1 alternative (no distinct options found)
+            _same_route = (safe_r is fast_r)
+            print(f'[routing] OLA: {len(ola_routes)} alternative(s) for mode={mode}')
 
-    try:
-        safe_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight=_safe_w)
-    except Exception as exc:
-        print(f'[routing] safe path failed ({type(exc).__name__}: {exc})')
-        safe_nodes = []
+    # ── Fallback: OSMnx pathfinding (used when OLA key missing or call fails) ─
+    if safe_coords is None:
+        g_path = g_proj.to_undirected()
 
-    try:
-        fast_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight=_fast_w)
-    except Exception as exc:
-        print(f'[routing] fast path failed ({type(exc).__name__}: {exc})')
-        fast_nodes = []
+        def _safe_w(u, v, d):
+            return min(
+                safe_weights.get((u, v, k),
+                    safe_weights.get((v, u, k),
+                        d[k].get('length', 1.0) * 1.5))
+                for k in d if d
+            ) if d else 1.0
 
-    # Last-resort fallback: plain shortest path by distance
-    if not safe_nodes:
+        def _fast_w(u, v, d):
+            return min(
+                float(d[k].get('length', 1.0)) / max(_edge_speed_kmh(d[k], mode), 1.0)
+                for k in d if d
+            ) if d else 1.0
+
+        orig_geom, _ = ox.projection.project_geometry(
+            Point(origin_lon, origin_lat), crs='EPSG:4326', to_crs=g_proj.graph['crs']
+        )
+        dest_geom, _ = ox.projection.project_geometry(
+            Point(dest_lon, dest_lat), crs='EPSG:4326', to_crs=g_proj.graph['crs']
+        )
+        orig_x, orig_y = orig_geom.coords[0]
+        dest_x, dest_y = dest_geom.coords[0]
+
+        orig_node = _nearest_node_on_graph(g_proj, orig_x, orig_y)
+        dest_node = _nearest_node_on_graph(g_proj, dest_x, dest_y)
+
+        if orig_node == dest_node:
+            return {'error': 'Origin and destination resolve to the same point on the map'}
+
         try:
-            safe_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight='length')
-            print('[routing] safe route used length fallback')
-        except Exception:
-            pass
-    if not fast_nodes:
+            safe_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight=_safe_w)
+        except Exception as exc:
+            print(f'[routing] safe path failed ({type(exc).__name__}: {exc})')
+            safe_nodes = []
+
         try:
-            fast_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight='length')
-            print('[routing] fast route used length fallback')
-        except Exception:
-            pass
+            fast_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight=_fast_w)
+        except Exception as exc:
+            print(f'[routing] fast path failed ({type(exc).__name__}: {exc})')
+            fast_nodes = []
 
-    if not safe_nodes or not fast_nodes:
-        hint = ' Try switching to Walk mode — cycle/drive networks can be sparse in some areas.' if mode in ('cycle', 'drive') else ''
-        return {'error': f'No route found between selected points.{hint}'}
+        if not safe_nodes:
+            try:
+                safe_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight='length')
+                print('[routing] safe route used length fallback')
+            except Exception:
+                pass
+        if not fast_nodes:
+            try:
+                fast_nodes = nx.shortest_path(g_path, orig_node, dest_node, weight='length')
+                print('[routing] fast route used length fallback')
+            except Exception:
+                pass
 
-    safe_score, safe_dist, safe_time = get_route_stats(g_proj, safe_nodes, mode, adj_scores)
-    fast_score, fast_dist, fast_time = get_route_stats(g_proj, fast_nodes, mode, adj_scores)
+        if not safe_nodes or not fast_nodes:
+            hint = ' Try switching to Walk mode — cycle/drive networks can be sparse in some areas.' if mode in ('cycle', 'drive') else ''
+            return {'error': f'No route found between selected points.{hint}'}
 
-    safe_coords = nodes_to_geojson_coords(g_proj, safe_nodes)
-    fast_coords = nodes_to_geojson_coords(g_proj, fast_nodes)
+        safe_score, safe_dist, safe_time = get_route_stats(g_proj, safe_nodes, mode, adj_scores)
+        fast_score, fast_dist, fast_time = get_route_stats(g_proj, fast_nodes, mode, adj_scores)
 
-    safe_issue_details = collect_issues_on_route(g_proj, safe_nodes, mode, proj_issues, kdtree)
-    fast_issue_details = collect_issues_on_route(g_proj, fast_nodes, mode, proj_issues, kdtree)
+        safe_coords = nodes_to_geojson_coords(g_proj, safe_nodes)
+        fast_coords = nodes_to_geojson_coords(g_proj, fast_nodes)
+
+        safe_issue_details = collect_issues_on_route(g_proj, safe_nodes, mode, proj_issues, kdtree)
+        fast_issue_details = collect_issues_on_route(g_proj, fast_nodes, mode, proj_issues, kdtree)
+        safe_steps = build_turn_steps(g_proj, safe_nodes)
+        fast_steps = build_turn_steps(g_proj, fast_nodes)
+        _same_route = (safe_nodes == fast_nodes)
+
+    if not safe_coords or not fast_coords:
+        return {'error': 'No route found between selected points.'}
+
     safe_issues = len(safe_issue_details)
     fast_issues = len(fast_issue_details)
 
-    safe_steps = build_turn_steps(g_proj, safe_nodes)
-    fast_steps = build_turn_steps(g_proj, fast_nodes)
-    fast_route_source = 'osmnx'
-
-    # For drive mode, replace the OSMnx fast route with OLA Maps' traffic-aware route.
-    # Walk/cycle are unaffected by traffic so OSMnx is kept for those.
-    if OLA_MAPS_KEY and mode == 'drive':
-        ola = _fetch_ola_fast_route(origin_lat, origin_lon, dest_lat, dest_lon, mode, OLA_MAPS_KEY)
-        if ola:
-            fast_route_source = 'ola_maps'
-            fast_coords = ola['coords']
-            fast_dist = ola['dist_km']
-            fast_time = ola['duration_min']
-            if ola['steps']:
-                fast_steps = ola['steps']
-            fast_score, fast_issue_details = _score_ola_route(
-                g_proj, fast_coords, proj_issues, kdtree, mode, _hour
-            )
-            fast_issues = len(fast_issue_details)
-
-    same_route = (safe_nodes == fast_nodes) or (
-        safe_dist > 0
-        and fast_dist > 0
-        and abs(safe_dist - fast_dist) <= 0.05 * max(safe_dist, fast_dist)
-        and abs(safe_time - fast_time) <= 0.05 * max(safe_time, fast_time)
-    )
+    same_route = _same_route
 
     return {
         'type': 'FeatureCollection',
         'features': [
             make_geojson_feature(
-                safe_coords,
-                'safe',
-                safe_score,
-                safe_dist,
-                safe_time,
-                mode,
-                safe_issues,
-                safe_issue_details,
-                safe_steps,
+                safe_coords, 'safe', safe_score, safe_dist, safe_time,
+                mode, safe_issues, safe_issue_details, safe_steps,
             ),
             make_geojson_feature(
-                fast_coords,
-                'fast',
-                fast_score,
-                fast_dist,
-                fast_time,
-                mode,
-                fast_issues,
-                fast_issue_details,
-                fast_steps,
+                fast_coords, 'fast', fast_score, fast_dist, fast_time,
+                mode, fast_issues, fast_issue_details, fast_steps,
             ),
             {
                 'type': 'Feature',
