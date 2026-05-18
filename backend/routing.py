@@ -619,7 +619,7 @@ def _fetch_ors_safe_route(
             'units': 'km',
         }
         if mode == 'walk':
-            body['options'] = {'avoid_features': ['highways', 'tollways', 'ferries']}
+            body['options'] = {'avoid_features': ['ferries']}
         elif mode == 'cycle':
             body['options'] = {'avoid_features': ['ferries']}
 
