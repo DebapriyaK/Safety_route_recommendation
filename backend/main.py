@@ -352,6 +352,7 @@ def compute_route(
 
     elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     print(f"[route] mode={req.mode} issues={len(issues_data)} latency_ms={elapsed_ms}")
+    print(f"[route] coords  origin=({req.origin_lat}, {req.origin_lon})  dest=({req.dest_lat}, {req.dest_lon})")
     if isinstance(result.get('metadata'), dict):
         result['metadata']['latency_ms'] = elapsed_ms
 

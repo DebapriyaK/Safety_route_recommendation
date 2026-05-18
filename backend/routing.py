@@ -621,7 +621,7 @@ def _fetch_ors_safe_route(
         if mode == 'walk':
             body['options'] = {'avoid_features': ['highways', 'tollways', 'ferries']}
         elif mode == 'cycle':
-            body['options'] = {'avoid_features': ['highways', 'tollways', 'ferries']}
+            body['options'] = {'avoid_features': ['ferries']}
 
         resp = _requests.post(
             f'https://api.openrouteservice.org/v2/directions/{profile}/geojson',

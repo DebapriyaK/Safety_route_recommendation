@@ -51,17 +51,61 @@ let _issueDragMarker = null;
 let adminIssueLayer = null;
 let globalIssueLayer = null;
 
+let _loadingTyperTimer = null;
+let _loadingTyperPhrase = 0;
+let _loadingTyperChar = 0;
+let _loadingTyperDeleting = false;
+const _LOADING_PHRASES = [
+  'Building street graph…',
+  'Crunching the numbers…',
+  'Finding the safest path…',
+  'Almost there…',
+  'Mapping your route…',
+];
+
+function _runLoadingTyper() {
+  const el = document.getElementById('loading-type');
+  if (!el) return;
+  const phrase = _LOADING_PHRASES[_loadingTyperPhrase % _LOADING_PHRASES.length];
+  if (!_loadingTyperDeleting) {
+    _loadingTyperChar++;
+    el.textContent = phrase.slice(0, _loadingTyperChar);
+    if (_loadingTyperChar === phrase.length) {
+      _loadingTyperDeleting = true;
+      _loadingTyperTimer = setTimeout(_runLoadingTyper, 1400);
+    } else {
+      _loadingTyperTimer = setTimeout(_runLoadingTyper, 55);
+    }
+  } else {
+    _loadingTyperChar--;
+    el.textContent = phrase.slice(0, _loadingTyperChar);
+    if (_loadingTyperChar === 0) {
+      _loadingTyperDeleting = false;
+      _loadingTyperPhrase++;
+      _loadingTyperTimer = setTimeout(_runLoadingTyper, 220);
+    } else {
+      _loadingTyperTimer = setTimeout(_runLoadingTyper, 30);
+    }
+  }
+}
+
 function showLoading(msg) {
   const el = document.getElementById('loading-overlay');
   if (!el) return;
-  const text = el.querySelector('#loading-text');
-  if (text) text.textContent = msg || 'Please wait...';
   el.style.display = 'flex';
+  clearTimeout(_loadingTyperTimer);
+  _loadingTyperChar = 0;
+  _loadingTyperDeleting = false;
+  _loadingTyperPhrase = 0;
+  const typeEl = document.getElementById('loading-type');
+  if (typeEl) typeEl.textContent = '';
+  _runLoadingTyper();
 }
 
 function hideLoading() {
   const el = document.getElementById('loading-overlay');
   if (el) el.style.display = 'none';
+  clearTimeout(_loadingTyperTimer);
 }
 
 function showToast(msg, duration = 3500) {
