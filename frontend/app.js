@@ -1361,8 +1361,17 @@ async function submitIssue(lat, lon) {
     map.closePopup();
     showToast('Issue reported successfully!');
 
-    if (currentUser?.is_admin) loadAdminIssueLayer();
-    if (_issuesLayerEnabled()) loadGlobalIssueLayer();
+    if (currentUser?.is_admin) {
+      loadAdminIssueLayer();
+    } else {
+      // Always show a confirmation dot for the user's own report, toggle or not.
+      const sevColor = { low: '#f39c12', medium: '#e67e22', high: '#e74c3c' }[severity] || '#e67e22';
+      const dot = L.circleMarker([lat, lon], {
+        radius: 8, color: sevColor, fillColor: sevColor, fillOpacity: 0.85, weight: 2,
+      }).bindPopup(`<b>${escHtml(category)}</b><br><span style="font-size:11px;color:#888">Your report — pending review</span>`);
+      dot.addTo(map);
+      if (_issuesLayerEnabled()) loadGlobalIssueLayer();
+    }
     if (lastRoutePayload) getRoutesFromInput();
   } catch {
     showToast('Failed to submit. Is the backend running?');
