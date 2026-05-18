@@ -37,7 +37,6 @@ from backend.database import SessionLocal, create_tables, engine, get_db
 from backend.issues import deactivate_stale_issues, router as issues_router
 from backend.models import Issue, RouteEvent
 from backend.routing import get_routes, preload_city_graphs
-from backend.saved_routes import router as saved_routes_router
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -168,7 +167,6 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(issues_router)
-app.include_router(saved_routes_router)
 
 
 @app.get('/geocode')

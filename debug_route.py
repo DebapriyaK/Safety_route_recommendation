@@ -263,7 +263,7 @@ def main():
     safe_weights, adj_scores, proj_issues, kdtree = _precompute_safe_weights(
         g_proj, MODE, issues_data, hour
     )
-    edge_kdtree, edge_score_list = _build_edge_kdtree(g_proj, adj_scores)
+    edge_kdtree, edge_score_list, base_score_list = _build_edge_kdtree(g_proj, adj_scores)
 
     # Build parallel highway list in same edge iteration order as _build_edge_kdtree
     edge_highway_list = []
@@ -300,7 +300,7 @@ def main():
     if ors_result:
         print(f'  ORS succeeded: {ors_result["dist_km"]} km, {ors_result["duration_min"]} min, {len(ors_result["coords"])} pts')
         print(f'\n  Scoring method: KDTree coord-snap (same as OLA)')
-        print_coord_score(g_proj, ors_result['coords'], edge_kdtree, edge_score_list,
+        print_coord_score(g_proj, ors_result['coords'], edge_kdtree, base_score_list,
                           edge_highway_list, proj_issues, kdtree, MODE, hour, 'ORS Safe')
     else:
         print('  ORS failed/unavailable → OSMnx fallback')
@@ -332,8 +332,8 @@ def main():
         # Score all and pick fastest
         scored = []
         for r in ola_routes:
-            sc, iss = _score_ola_route(g_proj, r['coords'], proj_issues, kdtree,
-                                       MODE, hour, edge_kdtree, edge_score_list)
+            sc, _baseline, iss = _score_ola_route(g_proj, r['coords'], proj_issues, kdtree,
+                                                   MODE, hour, edge_kdtree, edge_score_list, base_score_list)
             scored.append((sc, r, iss))
         fastest = min(scored, key=lambda x: x[1]['duration_min'])
         fast_score, fast_r, _ = fastest
@@ -344,7 +344,7 @@ def main():
             print(f'    [{i}] {r["dist_km"]} km, {r["duration_min"]} min, score={sc}{marker}')
 
         print(f'\n  Scoring method: KDTree coord-snap for fastest route')
-        print_coord_score(g_proj, fast_r['coords'], edge_kdtree, edge_score_list,
+        print_coord_score(g_proj, fast_r['coords'], edge_kdtree, base_score_list,
                           edge_highway_list, proj_issues, kdtree, MODE, hour, 'OLA Fast')
     else:
         print('  OLA unavailable → OSMnx time-weighted fallback')

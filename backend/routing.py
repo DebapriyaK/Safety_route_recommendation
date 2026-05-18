@@ -68,6 +68,10 @@ ISSUE_PENALTIES = {
     'Other': 10,
 }
 
+# credibility = max(0.15, 0.20 * reports + 0.20 * confirmations - 0.10 * dismissals)
+# All issues contribute some penalty — low-credibility ones are scaled down but not ignored.
+# 1 report → 0.20, 5 reports → 1.0 (full weight).
+
 ISSUE_RADIUS = {
     'walk': 40,
     'cycle': 50,
@@ -610,7 +614,7 @@ def _fetch_ors_safe_route(
     try:
         # shortest = most direct pedestrian path, less likely to route on wrong carriageway
         # recommended = prefer cycling infrastructure; fastest = direct driving path
-        _pref = {'walk': 'shortest', 'cycle': 'recommended', 'drive': 'fastest'}.get(mode, 'fastest')
+        _pref = {'walk': 'recommended', 'cycle': 'recommended', 'drive': 'fastest'}.get(mode, 'fastest')
         body: dict = {
             'coordinates': [[origin_lon, origin_lat], [dest_lon, dest_lat]],
             'preference': _pref,
@@ -809,25 +813,29 @@ def _fetch_ola_all_routes(
 def _score_ola_route(
     g_proj, coords_lonlat: List, proj_issues: List, kdtree, mode: str, hour: int,
     edge_kdtree=None, edge_score_list: List[float] = None,
-) -> Tuple[float, List[dict]]:
+    base_score_list: List[float] = None,
+) -> Tuple[float, float, List[dict]]:
     """Compute safety score and nearby-issue list for an OLA Maps route.
 
-    Baseline safety is derived from the nearest OSMnx edges (road-type scores),
-    then penalised by any reported issues near the route.  This replaces the
-    old hardcoded 75.0 baseline that caused fast routes to appear safer than
-    safe routes when no issues were present.
+    Returns (penalized_score, road_baseline, issues_detail).
+
+    road_baseline uses base_score_list (raw road-type scores, no issue penalties)
+    so the displayed score for ORS safe routes never drops just from issue reports
+    unless the fallback threshold triggers and the route actually changes.
     """
     if not coords_lonlat:
-        return 65.0, []
+        return 65.0, 65.0, []
     crs = g_proj.graph.get('crs')
     if not crs:
-        return 65.0, []
+        return 65.0, 65.0, []
 
     # Road-type baseline: length-weighted average of nearest OSMnx edge scores.
-    # Mirrors get_route_stats() which does weighted_safety += score * edge_len.
-    # Longer segments contribute proportionally more than short connector points.
+    # Uses base_score_list (raw road-type safety_score, no issue penalties) so
+    # issue reports cannot affect the displayed safe-route score unless the route
+    # itself changes (i.e. ORS→OSMnx fallback triggers).
+    _scores_for_baseline = base_score_list if base_score_list else edge_score_list
     road_baseline = 65.0
-    if edge_kdtree is not None and edge_score_list:
+    if edge_kdtree is not None and _scores_for_baseline:
         proj_pts: list = []  # (x, y, score) in projected CRS
         step_e = max(1, len(coords_lonlat) // 60)
         for lonlat in coords_lonlat[::step_e]:
@@ -836,7 +844,7 @@ def _score_ola_route(
                     Point(lonlat[0], lonlat[1]), crs='EPSG:4326', to_crs=crs
                 )
                 idx = edge_kdtree.query([pt.x, pt.y])[1]
-                proj_pts.append((pt.x, pt.y, edge_score_list[idx]))
+                proj_pts.append((pt.x, pt.y, _scores_for_baseline[idx]))
             except Exception:
                 pass
         if len(proj_pts) == 1:
@@ -854,7 +862,7 @@ def _score_ola_route(
                 road_baseline = round(weighted_sum / total_w, 1)
 
     if kdtree is None or not proj_issues:
-        return road_baseline, []
+        return road_baseline, road_baseline, []
 
     radius = ISSUE_RADIUS.get(mode, 50)
     hit_indices: set = set()
@@ -893,6 +901,7 @@ def _score_ola_route(
             'lat': issue.get('lat'),
             'lon': issue.get('lon'),
             'category': cat,
+            'severity': issue.get('severity', 'medium'),
             'description': issue.get('description', ''),
             'effective_confidence': conf,
             'num_reports': n_rep,
@@ -905,7 +914,7 @@ def _score_ola_route(
         -(int(x.get('num_reports', 0)) + int(x.get('num_confirmations', 0))),
     ))
     safety_score = max(0.0, min(100.0, road_baseline - min(total_penalty, road_baseline * 0.8)))
-    return round(safety_score, 1), issues_detail
+    return round(safety_score, 1), round(road_baseline, 1), issues_detail
 
 
 def _category_time_factor(category: str, current_hour: int) -> float:
@@ -1040,32 +1049,40 @@ def _precompute_safe_weights(g, mode: str, issues_data: Optional[List[dict]], cu
         restricted_penalty = 90.0 if data.get('in_restricted_zone') else 0.0
         adj_score = max(0.0, base_score - issue_penalty - mode_penalty - dark_penalty - restricted_penalty)
         adj_scores[(u, v, key)] = adj_score
-        safe_weights[(u, v, key)] = length * (2.0 - adj_score / 100.0)
+        # Issue surcharge is applied separately so that issue-heavy edges are
+        # meaningfully more expensive for Dijkstra — folding issue_penalty into
+        # adj_score alone only shifts the multiplier by ~8%, not enough to reroute.
+        issue_surcharge = min((issue_penalty / 8.0) * length, length * 2.5)
+        safe_weights[(u, v, key)] = length * (2.0 - adj_score / 100.0) + issue_surcharge
 
     return safe_weights, adj_scores, proj_issues, kdtree
 
 
 def _build_edge_kdtree(g, adj_scores: dict):
-    """Build a KDTree of edge midpoints with their adjusted safety scores.
+    """Build a KDTree of edge midpoints with two parallel score lists.
 
-    Used to give OLA routes a proper road-type safety baseline instead of a
-    hardcoded number — we snap each sampled polyline point to the nearest
-    OSMnx edge and read its precomputed adj_score.
+    adj_score_list  — penalised scores (issues, mode, darkness) used for the
+                      full penalised score calculation.
+    base_score_list — raw road-type safety_score before ANY penalties, used
+                      for road_baseline so reported issues never alter the
+                      displayed score when the route itself hasn't changed.
     """
     import numpy as np
     from scipy.spatial import cKDTree
 
     mids: list = []
-    scores: list = []
+    adj_score_list: list = []
+    base_score_list: list = []
     for u, v, key, data in g.edges(keys=True, data=True):
         un, vn = g.nodes[u], g.nodes[v]
         mids.append([(un['x'] + vn['x']) / 2.0, (un['y'] + vn['y']) / 2.0])
-        scores.append(adj_scores.get((u, v, key), float(data.get('safety_score', 50.0))))
+        adj_score_list.append(adj_scores.get((u, v, key), float(data.get('safety_score', 50.0))))
+        base_score_list.append(float(data.get('safety_score', 50.0)))
 
     if not mids:
-        return None, []
+        return None, [], []
 
-    return cKDTree(np.array(mids)), scores
+    return cKDTree(np.array(mids)), adj_score_list, base_score_list
 
 
 def _edge_payload(g_proj, u, v):
@@ -1445,7 +1462,7 @@ def get_routes(
     g_proj = get_graph(origin_lat, origin_lon, dest_lat, dest_lon, mode)
 
     safe_weights, adj_scores, proj_issues, kdtree = _precompute_safe_weights(g_proj, mode, issues_data)
-    edge_kdtree, edge_score_list = _build_edge_kdtree(g_proj, adj_scores)
+    edge_kdtree, edge_score_list, base_score_list = _build_edge_kdtree(g_proj, adj_scores)
 
     _hour = datetime.now(_IST).hour
 
@@ -1468,9 +1485,9 @@ def get_routes(
         if ola_routes:
             scored = []
             for r in ola_routes:
-                sc, iss = _score_ola_route(
+                sc, _baseline, iss = _score_ola_route(
                     g_proj, r['coords'], proj_issues, kdtree, mode, _hour,
-                    edge_kdtree, edge_score_list,
+                    edge_kdtree, edge_score_list, base_score_list,
                 )
                 scored.append((sc, r, iss))
             fastest = min(scored, key=lambda x: x[1]['duration_min'])
@@ -1526,12 +1543,36 @@ def get_routes(
         safe_time    = ors_result['duration_min']
         safe_steps   = ors_result['steps']
         safe_route_source = 'ors'
-        # Score the ORS route against our safety data the same way we score OLA routes
-        safe_score, safe_issue_details = _score_ola_route(
+        _safe_penalized, safe_score, safe_issue_details = _score_ola_route(
             g_proj, safe_coords, proj_issues, kdtree, mode, _hour,
-            edge_kdtree, edge_score_list,
+            edge_kdtree, edge_score_list, base_score_list,
         )
-        print(f'[routing] ORS safe: {safe_dist} km, {safe_time} min, score={safe_score}')
+        # safe_score = road baseline (displayed — issue penalties don't show until fallback triggers)
+        # _safe_penalized = full score with issue penalties (stored internally for future use)
+        # Compute total credibility-weighted penalty for issues on the ORS path.
+        # A single low-credibility report contributes ~2-5 pts — not enough to reroute.
+        # Only fall back to OSMnx (which penalises these edges in its weights) when
+        # the combined penalty is meaningful. Threshold varies implicitly per category
+        # since ISSUE_PENALTIES differ (Unsafe Area=35 vs Other=10), so no fixed
+        # report count exists that works across all types.
+        ors_issue_penalty = 0.0
+        for iss in safe_issue_details:
+            cat  = iss.get('category', 'Other')
+            conf = float(iss.get('effective_confidence', iss.get('confidence_score', 65)))
+            n_rep = iss.get('num_reports', 1)
+            n_con = iss.get('num_confirmations', 0)
+            n_dis = iss.get('num_dismissals', 0)
+            cred  = min(1.0, max(0.15, 0.20 * n_rep + 0.20 * n_con - 0.10 * n_dis))
+            sev   = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(iss.get('severity', 'medium'), 1.0)
+            ors_issue_penalty += ISSUE_PENALTIES.get(cat, 10) * cred * conf * sev * _category_time_factor(cat, _hour) / 100.0
+
+        if ors_issue_penalty >= 19.0:
+            # Meaningful issue load — OSMnx safety weights will route around these edges.
+            print(f'[routing] ORS path issue penalty={ors_issue_penalty:.1f} ≥ 19 → falling back to OSMnx')
+            safe_coords = None
+            safe_route_source = 'osmnx'
+        else:
+            print(f'[routing] ORS safe: {safe_dist} km, {safe_time} min, score={safe_score}')
 
     # ── Safe route fallback: OSMnx safety-weighted pathfinding ───────────────
     if safe_coords is None:
@@ -1578,11 +1619,15 @@ def get_routes(
             fast_steps = build_turn_steps(g_proj, fast_nodes)
             _same_route = (safe_route_source == 'osmnx' and safe_coords == fast_coords)
 
-    # ── same_route check: compare distance+time within 5% ────────────────────
-    if fast_coords is not None and fast_route_source == 'ola_maps':
+    # ── same_route check + traffic-aware time unification ────────────────────
+    if fast_coords is not None and fast_route_source == 'ola_maps' and fast_time > 0:
         dist_diff = abs(safe_dist - fast_dist) / max(fast_dist, 0.01)
-        time_diff = abs(safe_time - fast_time) / max(fast_time, 0.01)
-        _same_route = (dist_diff < 0.05 and time_diff < 0.05)
+        _same_route = dist_diff < 0.05
+        # ORS/OSMnx use static speed tables; OLA has real traffic data.
+        # When both routes cover the same corridor (within 10% distance),
+        # use OLA's time for the safe route so the user sees a realistic estimate.
+        if dist_diff < 0.10:
+            safe_time = fast_time
 
     if not safe_coords or not fast_coords:
         return {'error': 'No route found between selected points.'}

@@ -10,9 +10,14 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 const LS_LAST_SEARCH = 'last_search';
-const LS_SAVED_ROUTES = 'saved_routes';
 const LS_TRACKING_ENABLED = 'tracking_enabled';
+const LS_SHOW_ISSUES = 'show_issues';
 const LS_SEARCH_MEMORY = 'search_memory';
+
+function _issuesLayerEnabled() {
+  if (!currentUser) return false;
+  return localStorage.getItem(lsKey(LS_SHOW_ISSUES)) === '1';
+}
 
 // All user-facing storage is namespaced by user ID so two users on the same
 // browser never see each other's search history, saved routes, or preferences.
@@ -48,6 +53,7 @@ let _liveRouteTotalM = 0;
 let _liveRouteMode = 'walk';
 let _activeSheetTab = 'safe';
 let _issueDragMarker = null;
+let _issueFormPopup = null;
 let adminIssueLayer = null;
 let globalIssueLayer = null;
 
@@ -516,7 +522,11 @@ function drawRouteIssueMarkers(routeData) {
     issueClusterLayer.addLayer(marker);
   }
 
-  issueClusterLayer.addTo(map);
+  // Only show route issue dots to users when the issues actually forced a reroute (osmnx fallback).
+  // Admin always sees them. Regular users see them only when safe_route_source === 'osmnx'.
+  if (currentUser?.is_admin || routeData?.metadata?.safe_route_source === 'osmnx') {
+    issueClusterLayer.addTo(map);
+  }
 }
 
 async function getRoutesFromInput() {
@@ -692,7 +702,6 @@ function routeCard(p, type, meta) {
       <div class="rc-row">Time <span>~${formatMinutes(p.duration_min)} min</span></div>
       <div class="rc-row">Issues <span>${issues}</span></div>
       <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="small-btn" onclick="saveCurrentRoute('${type}')">Save</button>
         <button class="small-btn" onclick="showSteps('${type}')">${mobile ? 'Directions' : 'Steps'}</button>
         <button class="small-btn small-btn-primary" onclick="startLiveNavigation('${type}')">${mobile ? 'Start' : 'Live'}</button>
       </div>
@@ -1120,101 +1129,6 @@ function beginLiveNavigation(type) {
   );
 }
 
-// Server-side saved routes cache (populated on init for logged-in users)
-let _savedRoutesCache = [];
-
-function getSavedRoutes() {
-  return _savedRoutesCache;
-}
-
-async function loadSavedRoutesFromServer() {
-  if (!currentUser) { _savedRoutesCache = []; return; }
-  try {
-    const res = await fetch(`${API_BASE}/saved-routes`, { headers: authHeaders(false) });
-    if (res.ok) _savedRoutesCache = await res.json();
-  } catch {}
-}
-
-async function deleteSavedRoute(routeId) {
-  try {
-    await fetch(`${API_BASE}/saved-routes/${routeId}`, {
-      method: 'DELETE', headers: authHeaders(false),
-    });
-    _savedRoutesCache = _savedRoutesCache.filter((r) => r.id !== routeId);
-    showToast('Saved route removed.');
-  } catch {
-    showToast('Failed to remove saved route.');
-  }
-}
-
-async function saveCurrentRoute(type) {
-  if (!lastRoutePayload?.data) return;
-  if (!currentUser) { showToast('Login to save routes.'); return; }
-  const feature = (lastRoutePayload.data.features || []).find((f) => f.properties?.route_type === type);
-  if (!feature?.geometry?.coordinates?.length) {
-    showToast('No route to save yet.');
-    return;
-  }
-
-  try {
-    const body = {
-      origin_lat: lastRoutePayload.origin.lat,
-      origin_lon: lastRoutePayload.origin.lon,
-      dest_lat: lastRoutePayload.destination.lat,
-      dest_lon: lastRoutePayload.destination.lon,
-      origin_label: lastRoutePayload.origin.label || '',
-      dest_label: lastRoutePayload.destination.label || '',
-      mode: lastRoutePayload.mode,
-    };
-    const res = await fetch(`${API_BASE}/saved-routes`, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      showToast(err.detail || 'Could not save route.');
-      return;
-    }
-    const saved = await res.json();
-    _savedRoutesCache.unshift(saved);
-    showToast(`Saved ${type} route for quick alerts.`);
-  } catch {
-    showToast('Failed to save route.');
-  }
-}
-
-async function checkSavedRouteAlerts() {
-  if (!currentUser) return;
-  const routes = getSavedRoutes();
-  if (!routes.length) return;
-
-  try {
-    const res = await fetch(`${API_BASE}/issues`);
-    const issues = await res.json();
-    if (!Array.isArray(issues)) return;
-
-    for (const route of routes) {
-      // Seen-issue tracking lives in localStorage keyed by server route id
-      const seenKey = `sr_alert_seen_${route.id}`;
-      const seen = new Set(JSON.parse(localStorage.getItem(seenKey) || '[]'));
-
-      // Check issues within a generous bounding box around the route corridor
-      const latMin = Math.min(route.origin_lat, route.dest_lat) - 0.001;
-      const latMax = Math.max(route.origin_lat, route.dest_lat) + 0.001;
-      const lonMin = Math.min(route.origin_lon, route.dest_lon) - 0.001;
-      const lonMax = Math.max(route.origin_lon, route.dest_lon) + 0.001;
-
-      const nearNew = issues.filter(
-        (i) => i.lat >= latMin && i.lat <= latMax && i.lon >= lonMin && i.lon <= lonMax && !seen.has(i.id)
-      );
-
-      if (nearNew.length) {
-        nearNew.forEach((i) => seen.add(i.id));
-        localStorage.setItem(seenKey, JSON.stringify(Array.from(seen)));
-        showToast(`${nearNew.length} new issue(s) near your saved route "${route.label}".`);
-      }
-    }
-  } catch {}
-}
 
 
 async function toggleIssueLayer(on) {
@@ -1230,63 +1144,68 @@ async function toggleIssueLayer(on) {
 }
 
 async function loadGlobalIssueLayer() {
+  // Admin always sees the dedicated adminIssueLayer with full controls; skip toggle layer.
+  if (currentUser?.is_admin) return;
+
   if (globalIssueLayer) { map.removeLayer(globalIssueLayer); globalIssueLayer = null; }
 
   const res = await fetch(`${API_BASE}/issues`);
   const issues = await res.json();
   if (!Array.isArray(issues)) return;
 
-  // Use MarkerClusterGroup so nearby issues pool into a single badge
-  globalIssueLayer = L.markerClusterGroup({
-    maxClusterRadius: 40,
-    iconCreateFunction: (cluster) => {
-      const count = cluster.getChildCount();
-      return L.divIcon({
-        html: `<div style="background:#e74c3c;color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)">${count}</div>`,
-        className: '',
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-      });
-    },
-  });
-
+  // Grid-based clustering: one dot per ~200 m cell. Never expands into individual markers.
+  const CELL = 0.002;
+  const cells = new Map();
   for (const issue of issues) {
-    const stale = (issue.effective_confidence || 0) <= 55;
-    const sevColor = { low: '#f39c12', medium: '#e67e22', high: '#e74c3c' }[issue.severity] || '#e67e22';
-    const marker = L.circleMarker([issue.lat, issue.lon], {
-      radius: 8,
-      color: stale ? '#e67e22' : '#e74c3c',
-      fillColor: stale ? '#f39c12' : '#e74c3c',
+    const key = `${Math.floor(issue.lat / CELL)},${Math.floor(issue.lon / CELL)}`;
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push(issue);
+  }
+
+  globalIssueLayer = L.layerGroup();
+  for (const cellIssues of cells.values()) {
+    const avgLat = cellIssues.reduce((s, i) => s + i.lat, 0) / cellIssues.length;
+    const avgLon = cellIssues.reduce((s, i) => s + i.lon, 0) / cellIssues.length;
+    const count = cellIssues.length;
+    const r = count > 3 ? 13 : count > 1 ? 10 : 8;
+
+    const dot = L.circleMarker([avgLat, avgLon], {
+      radius: r,
+      color: '#c0392b',
+      fillColor: '#e74c3c',
       fillOpacity: 0.85,
       weight: 2,
     });
 
-    const validateHtml = currentUser && currentUser.id !== issue.reporter_id ? `
-      <div style="margin-top:8px;display:flex;gap:6px;">
-        <button onclick="validateIssue('${issue.id}','confirm')" style="flex:1;padding:4px 0;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Still there</button>
-        <button onclick="validateIssue('${issue.id}','dismiss')" style="flex:1;padding:4px 0;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Fixed/Gone</button>
-      </div>` : (currentUser ? '' : '<p style="font-size:11px;color:#888;margin:6px 0 0">Login to validate</p>');
+    // Group same-category issues within the cell, summing report counts
+    const sevOrder = { high: 2, medium: 1, low: 0 };
+    const sevColor = { low: '#f39c12', medium: '#e67e22', high: '#e74c3c' };
+    const byCategory = new Map();
+    for (const i of cellIssues) {
+      const cat = i.category;
+      if (!byCategory.has(cat)) byCategory.set(cat, { totalReports: 0, severity: i.severity });
+      const g = byCategory.get(cat);
+      g.totalReports += (i.num_reports || 1);
+      if ((sevOrder[i.severity] || 0) > (sevOrder[g.severity] || 0)) g.severity = i.severity;
+    }
 
-    const adminBtn = currentUser?.is_admin
-      ? `<button onclick="deleteIssue('${issue.id}')" style="margin-top:6px;width:100%;padding:3px 0;background:#7f1d1d;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">&#128465; Delete (Admin)</button>`
-      : '';
-
-    marker.bindPopup(`
-      <div style="min-width:180px">
-        <b style="font-size:13px">${escHtml(issue.category)}</b>
-        <span style="float:right;padding:1px 6px;background:${sevColor};color:#fff;border-radius:10px;font-size:10px">${issue.severity}</span>
+    const rows = Array.from(byCategory.entries()).map(([cat, g]) => `
+      <div style="padding:5px 0;border-bottom:1px solid #f0f0f0">
+        <span style="font-weight:600;font-size:12px">${escHtml(cat)}</span>
+        <span style="float:right;padding:1px 5px;background:${sevColor[g.severity] || '#e67e22'};color:#fff;border-radius:8px;font-size:10px">${g.severity}</span>
         <div style="clear:both"></div>
-        ${issue.description ? `<p style="margin:4px 0;font-size:12px;color:#555">${escHtml(issue.description)}</p>` : ''}
-        <div style="font-size:11px;color:#666;margin-top:4px">
-          Confidence: <b>${Math.round(issue.effective_confidence || 0)}</b> &bull;
-          ${issue.num_reports} report${issue.num_reports !== 1 ? 's' : ''} &bull;
-          ${issue.num_confirmations} confirm &bull; ${issue.num_dismissals} dismiss
-        </div>
-        ${validateHtml}${adminBtn}
+        <div style="font-size:11px;color:#888;margin-top:2px">${g.totalReports} report${g.totalReports !== 1 ? 's' : ''}</div>
+      </div>
+    `).join('');
+
+    dot.bindPopup(`
+      <div style="min-width:200px;max-height:260px;overflow-y:auto">
+        <b style="font-size:13px">${count} issue${count !== 1 ? 's' : ''} in this area</b>
+        <div style="margin-top:8px">${rows}</div>
       </div>
     `);
 
-    globalIssueLayer.addLayer(marker);
+    globalIssueLayer.addLayer(dot);
   }
 
   globalIssueLayer.addTo(map);
@@ -1336,7 +1255,7 @@ function _startIssuePlacement(lat, lon) {
 
   const openForm = () => {
     const pos = _issueDragMarker.getLatLng();
-    L.popup({ maxWidth: 260 })
+    _issueFormPopup = L.popup({ maxWidth: 260 })
       .setLatLng(pos)
       .setContent(_issueFormHtml(pos.lat, pos.lng))
       .openOn(map);
@@ -1354,16 +1273,14 @@ function enableIssueMode() {
     return;
   }
   if (navigator.geolocation) {
-    showLoading('Getting your location…');
+    showToast('Getting your location…', 5000);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        hideLoading();
         const { latitude, longitude } = pos.coords;
         map.flyTo([latitude, longitude], 17, { animate: true, duration: 0.9 });
         setTimeout(() => _startIssuePlacement(latitude, longitude), 950);
       },
       () => {
-        hideLoading();
         issueMode = true;
         showToast('Location unavailable — tap the map to mark the issue.');
         map.getContainer().style.cursor = 'crosshair';
@@ -1408,6 +1325,13 @@ map.on('click', function (e) {
     .openOn(map);
 });
 
+map.on('popupclose', function (e) {
+  if (_issueFormPopup && e.popup === _issueFormPopup) {
+    _issueFormPopup = null;
+    if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+  }
+});
+
 async function submitIssue(lat, lon) {
   const category = document.getElementById('issue-category')?.value || 'Other';
   const severity = document.getElementById('issue-severity')?.value || 'medium';
@@ -1433,11 +1357,12 @@ async function submitIssue(lat, lon) {
     }
 
     if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+    _issueFormPopup = null;
     map.closePopup();
     showToast('Issue reported successfully!');
 
     if (currentUser?.is_admin) loadAdminIssueLayer();
-    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
+    if (_issuesLayerEnabled()) loadGlobalIssueLayer();
     if (lastRoutePayload) getRoutesFromInput();
   } catch {
     showToast('Failed to submit. Is the backend running?');
@@ -1483,7 +1408,7 @@ async function validateIssue(issueId, response) {
     const label = response === 'confirm' ? 'Confirmed' : 'Dismissed';
     showToast(`${label}. New confidence: ${Math.round(data.confidence_score)}`);
 
-    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
+    if (_issuesLayerEnabled()) loadGlobalIssueLayer();
     if (lastRoutePayload) getRoutesFromInput();
   } catch {
     showToast('Validation failed. Please try again.');
@@ -1522,15 +1447,26 @@ async function deleteIssue(id) {
       headers: authHeaders(),
     });
     if (!res.ok) {
-      const err = await res.json();
-      showToast(err.detail || 'Delete failed.');
+      if (res.status === 403) {
+        currentUser = { ...currentUser, is_admin: false };
+        setUser(currentUser);
+        updateNavbar(currentUser);
+        showToast('Admin access revoked. Please refresh.');
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Delete failed.');
+      }
       return;
     }
     map.closePopup();
     showToast('Issue deleted.');
+    if (issueClusterLayer) {
+      issueClusterLayer.eachLayer(layer => {
+        if (layer._issueId === id) issueClusterLayer.removeLayer(layer);
+      });
+    }
     loadAdminIssueLayer();
-    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer();
-    if (lastRoutePayload) getRoutesFromInput();
+    if (_issuesLayerEnabled()) loadGlobalIssueLayer();
   } catch {
     showToast('Delete failed. Is the backend running?');
   }
@@ -1608,10 +1544,9 @@ function useMyLocation() {
     showToast('Geolocation is not supported by your browser.');
     return;
   }
-  showLoading('Getting your location...');
+  showToast('Getting your location…', 5000);
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      hideLoading();
       const { latitude, longitude } = pos.coords;
       originCoords = { lat: latitude, lon: longitude };
       document.getElementById('originInput').value = 'My Location';
@@ -1619,7 +1554,6 @@ function useMyLocation() {
       _placePin('origin', latitude, longitude);
     },
     () => {
-      hideLoading();
       showToast('Could not get your location. Check browser permissions.');
     },
     { enableHighAccuracy: true, timeout: 10000 }
@@ -1663,32 +1597,9 @@ function startPositionWatch() {
 }
 
 function syncTrackingUI() {
-  const toggle = document.getElementById('toggle-tracking');
-  if (!toggle) return;
-
-  if (!currentUser) {
-    toggle.checked = false;
-    toggle.disabled = true;
-    toggle.closest?.('.toggle-row')?.setAttribute('title', 'Login to enable nearby issue prompts');
-    return;
-  }
-
-  // Now that currentUser is known, read the user-scoped preference
+  if (!currentUser) { trackingEnabled = false; return; }
   trackingEnabled = localStorage.getItem(lsKey(LS_TRACKING_ENABLED)) === '1';
-  toggle.checked = trackingEnabled;
-  toggle.disabled = false;
-
-  toggle.addEventListener('change', () => {
-    trackingEnabled = !!toggle.checked;
-    localStorage.setItem(lsKey(LS_TRACKING_ENABLED), trackingEnabled ? '1' : '0');
-    if (trackingEnabled) {
-      showToast('Nearby issue prompts enabled.');
-      startPositionWatch();
-    } else {
-      showToast('Nearby issue prompts disabled.');
-      stopPositionWatch();
-    }
-  });
+  if (trackingEnabled) startPositionWatch();
 }
 
 setInterval(async () => {
@@ -1844,13 +1755,8 @@ function wireControls() {
   const routeBtn = document.getElementById('btn-get-route');
   if (routeBtn) routeBtn.onclick = getRoutesFromInput;
 
-  const issueToggle = document.getElementById('toggle-issues');
-  if (issueToggle) {
-    issueToggle.addEventListener('change', () => toggleIssueLayer(issueToggle.checked));
-  }
-
   map.on('moveend', () => {
-    if (document.getElementById('toggle-issues')?.checked) loadGlobalIssueLayer().catch(() => {});
+    if (_issuesLayerEnabled()) loadGlobalIssueLayer().catch(() => {});
   });
 }
 
@@ -1951,8 +1857,6 @@ async function init() {
 
   if (currentUser && trackingEnabled) startPositionWatch();
 
-  await loadSavedRoutesFromServer();
-  await checkSavedRouteAlerts();
   registerServiceWorker();
 
   if (fromShare) getRoutesFromInput();

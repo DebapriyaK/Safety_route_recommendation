@@ -437,9 +437,6 @@ def validate_issue(
     if existing:
         raise HTTPException(status_code=409, detail="You have already validated this issue")
 
-    # Proximity weight: standing next to the issue makes the validation 2× more credible
-    weight = _proximity_weight(body.user_lat, body.user_lon, issue.lat, issue.lon)
-
     validation = Validation(
         issue_id=issue_id,
         user_id=current_user.id,
@@ -452,9 +449,9 @@ def validate_issue(
     db.add(validation)
 
     if body.response == "confirm":
-        issue.num_confirmations += weight
+        issue.num_confirmations += 1
     else:
-        issue.num_dismissals += weight
+        issue.num_dismissals += 1
 
     issue.confidence_score = _compute_confidence(
         issue.num_reports, issue.num_confirmations, issue.num_dismissals

@@ -23,39 +23,80 @@
     .top-brand { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
     .top a { color: #fff; text-decoration: none; font-size: 13px; margin-left: 12px; opacity: 0.85; }
     .top a:hover { opacity: 1; }
-    .wrap { max-width: 700px; margin: 24px auto; padding: 0 16px; }
+    .wrap { max-width: 640px; margin: 24px auto; padding: 0 16px 40px; }
+
     .card {
       background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
-      padding: 20px;
+      border-radius: 14px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+      padding: 20px 22px;
       margin-bottom: 14px;
     }
-    .card-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; margin-bottom: 14px; }
-    .user-name { font-size: 20px; font-weight: 700; }
-    .user-email { font-size: 13px; color: #6b7280; margin-top: 2px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
+    .card-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .7px; color: #9ca3af; margin-bottom: 14px;
     }
+
+    /* Account card */
+    .account-row { display: flex; align-items: center; gap: 14px; }
+    .avatar {
+      width: 48px; height: 48px; border-radius: 50%;
+      background: linear-gradient(135deg, #3ecf8e, #27ae60);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .account-info { min-width: 0; }
+    .user-name { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .user-email { font-size: 13px; color: #6b7280; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .badge {
+      font-size: 10px; font-weight: 700; padding: 2px 8px;
+      border-radius: 20px; text-transform: uppercase; letter-spacing: .4px;
+    }
+    .badge-admin { background: #fef3c7; color: #92400e; }
+
+    /* Stats grid */
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .metric {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 12px;
+      background: #f9fafb; border: 1px solid #e5e7eb;
+      border-radius: 10px; padding: 12px 10px;
     }
-    .metric .k { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; }
-    .metric .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .metric .k { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .4px; }
+    .metric .v { font-size: 22px; font-weight: 700; margin-top: 4px; color: #111827; }
+
+    /* Mode buttons */
     .mode-row { display: flex; gap: 8px; margin-top: 4px; }
     .mode-btn {
-      flex: 1; padding: 9px 4px; border: 1.5px solid #d1d5db;
-      border-radius: 8px; background: #fff; font-size: 13px; font-weight: 500;
+      flex: 1; padding: 9px 4px; border: 1.5px solid #e5e7eb;
+      border-radius: 9px; background: #fff; font-size: 13px; font-weight: 500;
       cursor: pointer; text-align: center; transition: all 0.15s; color: #374151;
     }
     .mode-btn.active { border-color: #2c3e50; background: #2c3e50; color: #fff; }
-    .mode-btn:hover:not(.active) { background: #f3f4f6; }
+    .mode-btn:hover:not(.active) { background: #f9fafb; border-color: #d1d5db; }
     .mode-saved { font-size: 12px; color: #22c55e; margin-top: 8px; display: none; }
+
+    /* Toggle rows */
+    .toggle-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; border-bottom: 1px solid #f3f4f6;
+    }
+    .toggle-item:last-child { border-bottom: none; padding-bottom: 0; }
+    .toggle-label { font-size: 14px; font-weight: 500; color: #111827; }
+    .toggle-sub { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+
+    /* CSS toggle switch */
+    .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: #d1d5db; border-radius: 12px; transition: .2s;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 18px; width: 18px;
+      left: 3px; bottom: 3px; background: #fff; border-radius: 50%;
+      transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    }
+    input:checked + .slider { background: #2c3e50; }
+    input:checked + .slider:before { transform: translateX(20px); }
   </style>
 </head>
 <body>
@@ -77,19 +118,30 @@
   </div>
 
   <div class="wrap">
+    <!-- Account -->
     <div class="card">
       <div class="card-title">Account</div>
-      <div class="user-name" id="prof-name">—</div>
-      <div class="user-email" id="prof-email">—</div>
+      <div class="account-row">
+        <div class="avatar" id="prof-avatar">?</div>
+        <div class="account-info">
+          <div class="user-name">
+            <span id="prof-name">—</span>
+            <span class="badge badge-admin" id="admin-badge" style="display:none">Admin</span>
+          </div>
+          <div class="user-email" id="prof-email">—</div>
+        </div>
+      </div>
     </div>
 
+    <!-- Reports -->
     <div class="card">
-      <div class="card-title">Reports</div>
+      <div class="card-title">Your Reports</div>
       <div class="grid" id="reported-grid"></div>
     </div>
 
+    <!-- Travel mode -->
     <div class="card">
-      <div class="card-title">Preferred travel mode</div>
+      <div class="card-title">Preferred Travel Mode</div>
       <div class="mode-row" id="mode-row">
         <button class="mode-btn" data-mode="walk"  onclick="setMode('walk')">🚶 Walk</button>
         <button class="mode-btn" data-mode="cycle" onclick="setMode('cycle')">🚴 Cycle</button>
@@ -97,10 +149,48 @@
       </div>
       <div class="mode-saved" id="mode-saved">Saved!</div>
     </div>
+
+    <!-- Map settings -->
+    <div class="card">
+      <div class="card-title">Map Settings</div>
+
+      <div class="toggle-item">
+        <div>
+          <div class="toggle-label">Show reported issues</div>
+          <div class="toggle-sub">Display community-reported hazards on the map</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-show-issues" onchange="saveSetting('show_issues', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-item">
+        <div>
+          <div class="toggle-label">Nearby issue prompts</div>
+          <div class="toggle-sub">Get notified when you're near a reported hazard</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-tracking" onchange="saveSetting('tracking_enabled', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
   </div>
 
   <script src="auth.js?v=6"></script>
   <script>
+    let _profileUid = null;
+
+    function lsProfileKey(base) {
+      return `sr_${_profileUid}_${base}`;
+    }
+
+    function saveSetting(key, value) {
+      if (!_profileUid) return;
+      localStorage.setItem(lsProfileKey(key), value ? '1' : '0');
+    }
+
     function m(label, value) {
       return `<div class="metric"><div class="k">${label}</div><div class="v">${value}</div></div>`;
     }
@@ -122,6 +212,22 @@
       const user = await verifyToken();
       if (!user) { window.location.href = 'login.html'; return; }
 
+      _profileUid = user.id;
+
+      // Avatar initial
+      document.getElementById('prof-avatar').textContent = (user.username || '?')[0].toUpperCase();
+
+      // Admin badge
+      if (user.is_admin) {
+        document.getElementById('admin-badge').style.display = '';
+      }
+
+      // Load map setting toggles from localStorage
+      document.getElementById('toggle-show-issues').checked =
+        localStorage.getItem(lsProfileKey('show_issues')) === '1';
+      document.getElementById('toggle-tracking').checked =
+        localStorage.getItem(lsProfileKey('tracking_enabled')) === '1';
+
       try {
         const resp = await fetch(`${API_BASE}/auth/profile/stats`, { headers: authHeaders(false) });
         const data = await resp.json();
@@ -135,10 +241,9 @@
         document.getElementById('reported-grid').innerHTML = [
           m('Total reported', data.reported.total),
           m('Active reports', data.reported.currently_active),
-          m('Reputation score', `${repScore} <span style="font-size:11px;color:#6b7280;font-weight:400;">/1.5</span>`),
+          m('Reputation', `${repScore} <span style="font-size:11px;color:#9ca3af;font-weight:400;">/1.5</span>`),
         ].join('');
 
-        // Highlight current preferred mode
         const pref = user.preferred_mode || 'walk';
         document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === pref));
 
