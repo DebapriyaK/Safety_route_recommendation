@@ -1242,9 +1242,19 @@ function _issueFormHtml(lat, lon) {
   `;
 }
 
+let _issuePanelLat = null;
+let _issuePanelLon = null;
+
 function cancelIssuePlacement() {
-  if (_issueFormPopup) { map.closePopup(_issueFormPopup); _issueFormPopup = null; }
+  document.getElementById('issue-panel').style.display = 'none';
   if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+  _issuePanelLat = null;
+  _issuePanelLon = null;
+}
+
+function submitIssueFromPanel() {
+  if (_issuePanelLat === null) return;
+  submitIssue(_issuePanelLat, _issuePanelLon);
 }
 
 function _startIssuePlacement(lat, lon) {
@@ -1253,35 +1263,21 @@ function _startIssuePlacement(lat, lon) {
 
   const icon = L.divIcon({
     className: '',
-    html: '<div style="width:22px;height:22px;background:#e74c3c;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.45);cursor:grab"></div>',
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    html: '<div style="width:28px;height:28px;background:#e74c3c;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 12px rgba(0,0,0,0.5);cursor:grab;touch-action:none"></div>',
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
   });
 
   _issueDragMarker = L.marker([lat, lon], { draggable: true, icon }).addTo(map);
-
-  const openForm = () => {
-    const pos = _issueDragMarker.getLatLng();
-    const newPopup = L.popup({ maxWidth: 260, offset: [0, -14] })
-      .setLatLng(pos)
-      .setContent(_issueFormHtml(pos.lat, pos.lng));
-    _issueFormPopup = newPopup;
-    newPopup.openOn(map);
-  };
-
-  openForm();
-  showToast('Drag the red marker to the exact spot, then fill the form.', 4000);
+  _issuePanelLat = lat;
+  _issuePanelLon = lon;
+  document.getElementById('issue-panel').style.display = 'block';
 
   _issueDragMarker.on('dragend', () => {
-    // Temporarily disable closePopupOnClick to survive the synthetic click
-    // that mobile browsers fire after touchend on a draggable element.
-    map.options.closePopupOnClick = false;
-    openForm();
-    setTimeout(() => { map.options.closePopupOnClick = true; }, 600);
+    const pos = _issueDragMarker.getLatLng();
+    _issuePanelLat = pos.lat;
+    _issuePanelLon = pos.lng;
   });
-
-  // Tap the marker to reopen the form if it was dismissed
-  _issueDragMarker.on('click', openForm);
 }
 
 function enableIssueMode() {
@@ -1377,6 +1373,9 @@ async function submitIssue(lat, lon) {
 
     if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
     _issueFormPopup = null;
+    _issuePanelLat = null;
+    _issuePanelLon = null;
+    document.getElementById('issue-panel').style.display = 'none';
     map.closePopup();
     showToast('Issue reported successfully!');
 

@@ -1,10 +1,10 @@
-const CACHE_NAME = 'saferoute-shell-v8';
+const CACHE_NAME = 'saferoute-shell-v9';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/login.html',
   '/profile.html',
-  '/app.js?v=17',
+  '/app.js?v=18',
   '/auth.js?v=6',
 ];
 
