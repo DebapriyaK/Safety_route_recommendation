@@ -141,7 +141,6 @@ _SPAM_RADIUS_DEG  = 0.0009   # ~100 m at Bangalore latitude
 _SPAM_WINDOW_H    = 6        # same user, same area
 _DAILY_LIMIT      = 5        # max new issues per user per 24 h
 _AUTO_EXPIRE_DAYS = 30
-_AUTO_EXPIRE_MIN_EFFECTIVE_CONF = 20.0
 _DEDUP_RADIUS_DEG = 0.0005   # ~55 m — wider than before, more realistic dedup
 
 
@@ -216,10 +215,9 @@ def deactivate_stale_issues(db: Session) -> int:
     changed = 0
     now = datetime.now(timezone.utc)
     for issue in candidates:
-        if issue.effective_confidence < _AUTO_EXPIRE_MIN_EFFECTIVE_CONF:
-            issue.is_active = False
-            issue.resolved_at = now
-            changed += 1
+        issue.is_active = False
+        issue.resolved_at = now
+        changed += 1
     if changed:
         db.commit()
     return changed

@@ -810,6 +810,18 @@ def _fetch_ola_all_routes(
         return []
 
 
+# NOTE: dead code — not wired up. Submits route coords to OLA for traffic-adjusted duration.
+# def _get_traffic_duration(coords_lonlat, mode, ola_api_key):
+#     origin, dest = coords_lonlat[0], coords_lonlat[-1]
+#     resp = requests.get('https://api.olamaps.io/routing/v1/directions', params={
+#         'origin': f'{origin[1]},{origin[0]}', 'destination': f'{dest[1]},{dest[0]}',
+#         'mode': {'drive': 'driving', 'walk': 'walking', 'cycle': 'cycling'}.get(mode, 'driving'),
+#         'departure_time': 'now', 'traffic_model': 'best_guess', 'api_key': ola_api_key,
+#     }, timeout=6)
+#     leg = resp.json()['routes'][0]['legs'][0]
+#     return leg.get('duration_in_traffic', leg['duration'])['value']
+
+
 def _score_ola_route(
     g_proj, coords_lonlat: List, proj_issues: List, kdtree, mode: str, hour: int,
     edge_kdtree=None, edge_score_list: List[float] = None,
