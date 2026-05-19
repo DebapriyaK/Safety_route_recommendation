@@ -116,6 +116,21 @@ function hideLoading() {
   clearTimeout(_loadingTyperTimer);
 }
 
+// On mobile: swipe down on the loading overlay to cancel/reload,
+// since overflow:hidden on body blocks the browser's native pull-to-refresh.
+(function () {
+  const overlay = document.getElementById('loading-overlay');
+  if (!overlay) return;
+  let _startY = null;
+  overlay.addEventListener('touchstart', (e) => { _startY = e.touches[0].clientY; }, { passive: true });
+  overlay.addEventListener('touchend', (e) => {
+    if (_startY === null) return;
+    const dy = e.changedTouches[0].clientY - _startY;
+    _startY = null;
+    if (dy > 80) window.location.reload();
+  }, { passive: true });
+})();
+
 function showToast(msg, duration = 3500) {
   const toast = document.createElement('div');
   toast.textContent = msg;
@@ -1918,7 +1933,10 @@ async function init() {
 
   registerServiceWorker();
 
-  if (fromShare) getRoutesFromInput();
+  // Only auto-route when the page is freshly opened via a shared link, not on a manual reload.
+  // On reload the URL still has the params but the user explicitly wanted a fresh start.
+  const navType = performance.getEntriesByType?.('navigation')?.[0]?.type;
+  if (fromShare && navType !== 'reload') getRoutesFromInput();
 }
 
 init();
@@ -1939,34 +1957,13 @@ init();
     panel.style.transform = open ? 'translateY(0px)' : `translateY(${Math.round(peekPx)}px)`;
   }
 
-  // ── Touch drag ─────────────────────────────────────────────────────────────
-  // Must be { passive: false } so e.preventDefault() actually works and stops
-  // the browser from treating this as a map-pan gesture.
-  handle.addEventListener('touchstart', function (e) {
+  // Pointer Events API: works for both touch and mouse, and setPointerCapture
+  // ensures the handle keeps receiving events even when the finger drifts off it.
+  // This also prevents the browser / Leaflet from treating the gesture as a map pan.
+  handle.addEventListener('pointerdown', function (e) {
     e.preventDefault();
-    const startY = e.touches[0].clientY;
-    const startTy = getTy();
-    panel.style.transition = 'none';
+    handle.setPointerCapture(e.pointerId);
 
-    function onMove(ev) {
-      const peekPx = panel.offsetHeight * 0.5;
-      const ty = Math.max(0, Math.min(peekPx, startTy + ev.touches[0].clientY - startY));
-      panel.style.transform = `translateY(${ty}px)`;
-    }
-
-    function onEnd() {
-      window.removeEventListener('touchmove', onMove);
-      window.removeEventListener('touchend', onEnd);
-      snapTo(getTy() < panel.offsetHeight * 0.25);
-    }
-
-    window.addEventListener('touchmove', onMove, { passive: true });
-    window.addEventListener('touchend', onEnd, { passive: true });
-  }, { passive: false });
-
-  // ── Mouse drag (desktop) ───────────────────────────────────────────────────
-  handle.addEventListener('mousedown', function (e) {
-    e.preventDefault();
     const startY = e.clientY;
     const startTy = getTy();
     panel.style.transition = 'none';
@@ -1977,13 +1974,15 @@ init();
       panel.style.transform = `translateY(${ty}px)`;
     }
 
-    function onEnd() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onEnd);
+    function onUp() {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
       snapTo(getTy() < panel.offsetHeight * 0.25);
     }
 
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onEnd);
-  });
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  }, { passive: false });
 })();
