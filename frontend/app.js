@@ -1237,12 +1237,19 @@ function _issueFormHtml(lat, lon) {
       <label style="font-size:12px;color:#555">Description (optional)</label><br>
       <input id="issue-desc" placeholder="Brief description..." style="width:100%;padding:5px;margin-bottom:10px;border-radius:5px;border:1px solid #ddd;font-size:13px"/><br>
       <button onclick="submitIssue(${lat}, ${lon})" style="width:100%;padding:8px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Submit Report</button>
+      <button onclick="cancelIssuePlacement()" style="width:100%;padding:6px;margin-top:6px;background:none;color:#888;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:12px">Cancel</button>
     </div>
   `;
 }
 
+function cancelIssuePlacement() {
+  if (_issueFormPopup) { map.closePopup(_issueFormPopup); _issueFormPopup = null; }
+  if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+}
+
 function _startIssuePlacement(lat, lon) {
   if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+  if (_issueFormPopup) { map.closePopup(_issueFormPopup); _issueFormPopup = null; }
 
   const icon = L.divIcon({
     className: '',
@@ -1255,16 +1262,26 @@ function _startIssuePlacement(lat, lon) {
 
   const openForm = () => {
     const pos = _issueDragMarker.getLatLng();
-    const newPopup = L.popup({ maxWidth: 260 })
+    const newPopup = L.popup({ maxWidth: 260, offset: [0, -14] })
       .setLatLng(pos)
       .setContent(_issueFormHtml(pos.lat, pos.lng));
-    _issueFormPopup = newPopup; // set before openOn so the popupclose handler doesn't remove the drag marker
+    _issueFormPopup = newPopup;
     newPopup.openOn(map);
   };
 
   openForm();
-  showToast('Drag the red marker to the exact spot if needed.', 4000);
-  _issueDragMarker.on('dragend', openForm);
+  showToast('Drag the red marker to the exact spot, then fill the form.', 4000);
+
+  _issueDragMarker.on('dragend', () => {
+    // Temporarily disable closePopupOnClick to survive the synthetic click
+    // that mobile browsers fire after touchend on a draggable element.
+    map.options.closePopupOnClick = false;
+    openForm();
+    setTimeout(() => { map.options.closePopupOnClick = true; }, 600);
+  });
+
+  // Tap the marker to reopen the form if it was dismissed
+  _issueDragMarker.on('click', openForm);
 }
 
 function enableIssueMode() {
@@ -1329,7 +1346,8 @@ map.on('click', function (e) {
 map.on('popupclose', function (e) {
   if (_issueFormPopup && e.popup === _issueFormPopup) {
     _issueFormPopup = null;
-    if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+    // Marker stays alive — user can drag it or tap it to reopen the form.
+    // It is only removed on Submit (submitIssue) or Cancel (cancelIssuePlacement).
   }
 });
 
