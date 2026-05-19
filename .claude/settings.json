@@ -27,7 +27,13 @@
       "Bash(python -m pytest tests/test_auth.py -v --tb=short -s)",
       "Bash(python -m pytest tests/test_auth.py::test_register_success tests/test_auth.py::test_register_duplicate_username tests/test_auth.py::test_login_success tests/test_auth.py::test_me_no_token --tb=long -q)",
       "Bash(railway --version)",
-      "Bash(python -c \"import backend.routing; print\\('OK'\\)\")"
+      "Bash(python -c \"import backend.routing; print\\('OK'\\)\")",
+      "Bash(Get-ChildItem -Path \"d:\\\\College Stuff\\\\SEM6\\\\swe\\\\test\" -Recurse -Force)",
+      "Bash(ConvertTo-Csv -NoTypeInformation)",
+      "Bash(Out-String)",
+      "Bash(python -c \"import docx; print\\('python-docx ok', docx.__version__\\)\")",
+      "Bash(python generate_report.py)",
+      "Bash(python generate_report_v3.py)"
     ],
     "additionalDirectories": [
       "d:\\College Stuff\\SEM6\\swe\\test\\backend\\graph_store"

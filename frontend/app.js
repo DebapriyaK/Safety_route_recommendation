@@ -1255,10 +1255,11 @@ function _startIssuePlacement(lat, lon) {
 
   const openForm = () => {
     const pos = _issueDragMarker.getLatLng();
-    _issueFormPopup = L.popup({ maxWidth: 260 })
+    const newPopup = L.popup({ maxWidth: 260 })
       .setLatLng(pos)
-      .setContent(_issueFormHtml(pos.lat, pos.lng))
-      .openOn(map);
+      .setContent(_issueFormHtml(pos.lat, pos.lng));
+    _issueFormPopup = newPopup; // set before openOn so the popupclose handler doesn't remove the drag marker
+    newPopup.openOn(map);
   };
 
   openForm();
