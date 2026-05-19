@@ -29,6 +29,8 @@ const SEARCH_RECENT_LIMIT = 6;
 const SEARCH_COMMON_LIMIT = 6;
 const LIVE_NAV_ARRIVAL_M = 30;
 
+function isMobile() { return window.innerWidth <= 768; }
+
 let issueMode = false;
 let routeLayer = null;
 let markerLayer = null;
@@ -1244,12 +1246,17 @@ function _issueFormHtml(lat, lon) {
 
 let _issuePanelLat = null;
 let _issuePanelLon = null;
+let _userGpsLat = null;
+let _userGpsLon = null;
 
 function cancelIssuePlacement() {
   document.getElementById('issue-panel').style.display = 'none';
+  if (_issueFormPopup) { _issueFormPopup = null; map.closePopup(); }
   if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
   _issuePanelLat = null;
   _issuePanelLon = null;
+  _userGpsLat = null;
+  _userGpsLon = null;
 }
 
 function submitIssueFromPanel() {
@@ -1259,7 +1266,7 @@ function submitIssueFromPanel() {
 
 function _startIssuePlacement(lat, lon) {
   if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
-  if (_issueFormPopup) { map.closePopup(_issueFormPopup); _issueFormPopup = null; }
+  if (_issueFormPopup) { _issueFormPopup = null; map.closePopup(); }
 
   const icon = L.divIcon({
     className: '',
@@ -1269,15 +1276,37 @@ function _startIssuePlacement(lat, lon) {
   });
 
   _issueDragMarker = L.marker([lat, lon], { draggable: true, icon }).addTo(map);
-  _issuePanelLat = lat;
-  _issuePanelLon = lon;
-  document.getElementById('issue-panel').style.display = 'block';
+  _userGpsLat = lat;
+  _userGpsLon = lon;
 
-  _issueDragMarker.on('dragend', () => {
-    const pos = _issueDragMarker.getLatLng();
-    _issuePanelLat = pos.lat;
-    _issuePanelLon = pos.lng;
-  });
+  if (isMobile()) {
+    // ── Mobile: fixed bottom panel ──────────────────────────────────────────
+    _issuePanelLat = lat;
+    _issuePanelLon = lon;
+    const panel = document.getElementById('issue-panel');
+    panel.style.transition = 'none';
+    panel.style.transform = 'translateY(0px)';
+    panel.style.display = 'block';
+
+    _issueDragMarker.on('dragend', () => {
+      const pos = _issueDragMarker.getLatLng();
+      _issuePanelLat = pos.lat;
+      _issuePanelLon = pos.lng;
+    });
+  } else {
+    // ── Desktop: Leaflet popup (original behaviour) ─────────────────────────
+    const openForm = () => {
+      const pos = _issueDragMarker.getLatLng();
+      const newPopup = L.popup({ maxWidth: 260 })
+        .setLatLng(pos)
+        .setContent(_issueFormHtml(pos.lat, pos.lng));
+      _issueFormPopup = newPopup;
+      newPopup.openOn(map);
+    };
+    openForm();
+    showToast('Drag the red marker to the exact spot if needed.', 4000);
+    _issueDragMarker.on('dragend', openForm);
+  }
 }
 
 function enableIssueMode() {
@@ -1295,16 +1324,12 @@ function enableIssueMode() {
         setTimeout(() => _startIssuePlacement(latitude, longitude), 950);
       },
       () => {
-        issueMode = true;
-        showToast('Location unavailable — tap the map to mark the issue.');
-        map.getContainer().style.cursor = 'crosshair';
+        showToast('Location unavailable. Please check your GPS / connection and try again.', 4000);
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
   } else {
-    issueMode = true;
-    showToast('Tap on the map to place the issue marker.');
-    map.getContainer().style.cursor = 'crosshair';
+    showToast('Location unavailable. Please enable GPS and try again.', 4000);
   }
 }
 
@@ -1342,8 +1367,13 @@ map.on('click', function (e) {
 map.on('popupclose', function (e) {
   if (_issueFormPopup && e.popup === _issueFormPopup) {
     _issueFormPopup = null;
-    // Marker stays alive — user can drag it or tap it to reopen the form.
-    // It is only removed on Submit (submitIssue) or Cancel (cancelIssuePlacement).
+    // Desktop: clean up the drag marker when the user dismisses the form popup.
+    // On mobile the panel is used instead; marker lifetime is managed separately.
+    if (!isMobile()) {
+      if (_issueDragMarker) { map.removeLayer(_issueDragMarker); _issueDragMarker = null; }
+      _userGpsLat = null;
+      _userGpsLon = null;
+    }
   }
 });
 
@@ -1356,7 +1386,7 @@ async function submitIssue(lat, lon) {
     const res = await fetch(`${API_BASE}/issues`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ lat, lon, category, severity, description }),
+      body: JSON.stringify({ lat, lon, category, severity, description, reporter_lat: _userGpsLat, reporter_lon: _userGpsLon }),
     });
 
     if (res.status === 401) {
@@ -1375,7 +1405,9 @@ async function submitIssue(lat, lon) {
     _issueFormPopup = null;
     _issuePanelLat = null;
     _issuePanelLon = null;
-    document.getElementById('issue-panel').style.display = 'none';
+    _userGpsLat = null;
+    _userGpsLon = null;
+    if (isMobile()) document.getElementById('issue-panel').style.display = 'none';
     map.closePopup();
     showToast('Issue reported successfully!');
 
@@ -1890,3 +1922,68 @@ async function init() {
 }
 
 init();
+
+(function initIssuePanelDrag() {
+  const panel = document.getElementById('issue-panel');
+  const handle = document.getElementById('issue-panel-handle');
+  if (!panel || !handle) return;
+
+  function getTy() {
+    const m = (panel.style.transform || '').match(/translateY\(([-\d.]+)px\)/);
+    return m ? parseFloat(m[1]) : 0;
+  }
+
+  function snapTo(open) {
+    const peekPx = panel.offsetHeight * 0.5;
+    panel.style.transition = 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+    panel.style.transform = open ? 'translateY(0px)' : `translateY(${Math.round(peekPx)}px)`;
+  }
+
+  // ── Touch drag ─────────────────────────────────────────────────────────────
+  // Must be { passive: false } so e.preventDefault() actually works and stops
+  // the browser from treating this as a map-pan gesture.
+  handle.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    const startY = e.touches[0].clientY;
+    const startTy = getTy();
+    panel.style.transition = 'none';
+
+    function onMove(ev) {
+      const peekPx = panel.offsetHeight * 0.5;
+      const ty = Math.max(0, Math.min(peekPx, startTy + ev.touches[0].clientY - startY));
+      panel.style.transform = `translateY(${ty}px)`;
+    }
+
+    function onEnd() {
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+      snapTo(getTy() < panel.offsetHeight * 0.25);
+    }
+
+    window.addEventListener('touchmove', onMove, { passive: true });
+    window.addEventListener('touchend', onEnd, { passive: true });
+  }, { passive: false });
+
+  // ── Mouse drag (desktop) ───────────────────────────────────────────────────
+  handle.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startTy = getTy();
+    panel.style.transition = 'none';
+
+    function onMove(ev) {
+      const peekPx = panel.offsetHeight * 0.5;
+      const ty = Math.max(0, Math.min(peekPx, startTy + ev.clientY - startY));
+      panel.style.transform = `translateY(${ty}px)`;
+    }
+
+    function onEnd() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onEnd);
+      snapTo(getTy() < panel.offsetHeight * 0.25);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+  });
+})();

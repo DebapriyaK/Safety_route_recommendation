@@ -33,6 +33,8 @@ VALID_SEVERITIES = ("low", "medium", "high")
 class IssueCreate(BaseModel):
     lat: float
     lon: float
+    reporter_lat: float
+    reporter_lon: float
     category: str
     description: Optional[str] = Field(default="", max_length=500)
     severity: Optional[str] = "medium"
@@ -49,6 +51,20 @@ class IssueCreate(BaseModel):
     def validate_lon(cls, v: float) -> float:
         if not (-180 <= v <= 180):
             raise ValueError("lon must be between -180 and 180")
+        return v
+
+    @field_validator("reporter_lat")
+    @classmethod
+    def validate_reporter_lat(cls, v: float) -> float:
+        if not (-90 <= v <= 90):
+            raise ValueError("reporter_lat must be between -90 and 90")
+        return v
+
+    @field_validator("reporter_lon")
+    @classmethod
+    def validate_reporter_lon(cls, v: float) -> float:
+        if not (-180 <= v <= 180):
+            raise ValueError("reporter_lon must be between -180 and 180")
         return v
 
     @field_validator("category")
@@ -135,6 +151,16 @@ def _proximity_weight(user_lat: Optional[float], user_lon: Optional[float],
     if abs(user_lat - issue_lat) < 0.001 and abs(user_lon - issue_lon) < 0.001:
         return 2
     return 1
+
+
+_MAX_REPORT_DISTANCE_KM = 5.0  # reporter's GPS must be within 5 km of the reported issue
+
+def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Equirectangular approximation — accurate enough for < 100 km."""
+    mid_lat = math.radians((lat1 + lat2) / 2)
+    dlat = lat2 - lat1
+    dlon = (lon2 - lon1) * math.cos(mid_lat)
+    return math.sqrt(dlat ** 2 + dlon ** 2) * 111.0
 
 
 _SPAM_RADIUS_DEG  = 0.0009   # ~100 m at Bangalore latitude
@@ -255,6 +281,13 @@ def create_issue(
     is_admin = current_user.username in ADMIN_USERNAMES
     if not is_admin:
         _check_spam(db, current_user, body.lat, body.lon)
+        dist_km = _distance_km(body.reporter_lat, body.reporter_lon, body.lat, body.lon)
+        if dist_km > _MAX_REPORT_DISTANCE_KM:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reported location is {dist_km:.1f} km from your GPS position. "
+                       f"You must be within {_MAX_REPORT_DISTANCE_KM:.0f} km of the issue to report it.",
+            )
 
     # Deduplication: aggregate nearby same-category reports instead of creating duplicates
     # Admins bypass dedup so they can place multiple test markers in the same area.
