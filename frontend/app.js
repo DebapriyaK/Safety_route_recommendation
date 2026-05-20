@@ -1422,7 +1422,7 @@ async function submitIssue(lat, lon) {
     _issuePanelLon = null;
     _userGpsLat = null;
     _userGpsLon = null;
-    if (isMobile()) document.getElementById('issue-panel').style.display = 'none';
+    document.getElementById('issue-panel').style.display = 'none';
     map.closePopup();
     showToast('Issue reported successfully!');
 
@@ -1505,7 +1505,11 @@ async function loadAdminIssueLayer() {
         <b style="font-size:13px">${escHtml(issue.category)}</b><br>
         ${issue.description ? escHtml(issue.description) + '<br>' : ''}
         <small>Reporter: ${escHtml(issue.reporter_name || 'unknown')} &bull; Conf: ${Math.round(issue.effective_confidence || 0)}</small>
-        <br><button onclick="deleteIssue('${issue.id}')" style="margin-top:7px;padding:4px 12px;background:#7f1d1d;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">&#128465; Delete Issue</button>
+        <br><div style="display:flex;gap:5px;margin-top:7px;flex-wrap:wrap;">
+          <button onclick="adminValidateIssue('${issue.id}','confirm')" style="padding:4px 10px;background:#15803d;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">&#10003; Confirm</button>
+          <button onclick="adminValidateIssue('${issue.id}','dismiss')" style="padding:4px 10px;background:#b45309;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">&#10007; Deny</button>
+          <button onclick="deleteIssue('${issue.id}')" style="padding:4px 10px;background:#7f1d1d;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;">&#128465; Delete</button>
+        </div>
       `);
       adminIssueLayer.addLayer(marker);
     }
@@ -1544,6 +1548,11 @@ async function deleteIssue(id) {
   } catch {
     showToast('Delete failed. Is the backend running?');
   }
+}
+
+async function adminValidateIssue(issueId, response) {
+  await validateIssue(issueId, response);
+  loadAdminIssueLayer();
 }
 
 function showValidationPopup(issueId, latlng) {
